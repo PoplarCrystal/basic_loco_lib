@@ -1,0 +1,63 @@
+diff --git a/source/isaaclab_newton/isaaclab_newton/cloner/replicate.py b/source/isaaclab_newton/isaaclab_newton/cloner/replicate.py
+index ff1a45063..e5ecaa3de 100644
+--- a/source/isaaclab_newton/isaaclab_newton/cloner/replicate.py
++++ b/source/isaaclab_newton/isaaclab_newton/cloner/replicate.py
+@@ -267,13 +267,10 @@ def _replicate_newton(
+     if simulation:
+         NewtonManager._cable_bindings = cable_bindings
+         geometry = expand_deformable_entries(entries, plan, env_ids, positions, imported_sources=source_builders)
+-        ranges = {
+-            label: start
+-            for family in ("cloth", "soft")
+-            for label, start in zip(
+-                getattr(builder, f"_{family}_label"), getattr(builder, f"_{family}_particle_start"), strict=True
+-            )
+-        }
++        # newton>=1.7 renamed _cloth/_soft_label to surface_label/volume_label;
++        # backported from upstream develop #8381 so the pinned tag works with newton 1.7.0.
++        ranges = dict(zip(builder.surface_label, builder._surface_particle_start, strict=True))
++        ranges.update(zip(builder.volume_label, builder._volume_particle_start, strict=True))
+         offsets = [ranges[entry.root_path] for entry in geometry]
+         batches = deformable_geometry_batches(geometry, offsets, device=sim.device)
+         if visual_ranges:
+diff --git a/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py b/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py
+index 439f6260d..3f2314173 100644
+--- a/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py
++++ b/source/isaaclab_newton/isaaclab_newton/physics/newton_manager.py
+@@ -171,17 +171,15 @@ class NewtonBackend:
+         builder = SimulationContext.instance().get_or_create_backend(NewtonBuilderCfg(physics_cfg=cfg.physics_cfg))
+         self.model = builder.finalize(device=cfg.device)
+         self.particle_ranges: dict[str, tuple[int, int]] = {}
+-        # Newton 1.6 preserves groups through builder replication but not finalization.
+-        # Remove this snapshot when the pinned Newton includes newton-physics/newton#3326.
++        # newton>=1.7 renamed _cloth/_soft_label to surface_label/volume_label
++        # (backported from upstream develop #8381; group snapshot no longer needed).
+         self.deformable_ranges = {
+             label: (start, end - start, kind)
+-            for family, kind in (("cloth", "surface"), ("soft", "volume"))
+-            for label, start, end in zip(
+-                getattr(builder, f"_{family}_label"),
+-                getattr(builder, f"_{family}_particle_start"),
+-                getattr(builder, f"_{family}_particle_end"),
+-                strict=True,
++            for kind, labels, starts, ends in (
++                ("surface", builder.surface_label, builder._surface_particle_start, builder._surface_particle_end),
++                ("volume", builder.volume_label, builder._volume_particle_start, builder._volume_particle_end),
+             )
++            for label, start, end in zip(labels, starts, ends, strict=True)
+         }
+         self.model.num_envs = self.model.world_count
+         simulation = isinstance(cfg.physics_cfg, NewtonCfg)
+diff --git a/source/isaaclab_newton/isaaclab_newton/sensors/contact_sensor/contact_sensor.py b/source/isaaclab_newton/isaaclab_newton/sensors/contact_sensor/contact_sensor.py
+index 307ffaff1..4d5bf6363 100644
+--- a/source/isaaclab_newton/isaaclab_newton/sensors/contact_sensor/contact_sensor.py
++++ b/source/isaaclab_newton/isaaclab_newton/sensors/contact_sensor/contact_sensor.py
+@@ -562,7 +562,7 @@ class ContactSensor(BaseContactSensor):
+             return
+         self._update_outdated_buffers()
+ 
+-        sensing_transforms = wp.to_torch(self.contact_view.sensing_obj_transforms)
++        sensing_transforms = wp.to_torch(self.contact_view.sensing_transforms)
+         positions = sensing_transforms.reshape(self._num_envs, self._num_sensors, 7)[..., :3]
+         normal_forces = self._data.net_normal_forces_w.torch
+         friction_forces = self._data.net_friction_forces_w
