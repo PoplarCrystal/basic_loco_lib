@@ -1,0 +1,89 @@
+# C++
+**/cmake-build*/
+**/build*/
+**/*.so
+**/*.log*
+
+# Omniverse
+**/*.dmp
+**/.thumbs
+
+# No USD files allowed in the repo
+**/*.usd
+**/*.usda
+**/*.usdc
+**/*.usdz
+
+# Python
+.venv/
+.DS_Store
+**/*.egg-info/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+**/*.pb
+
+# Docker/Singularity
+**/*.sif
+docker/cluster/exports/
+docker/.container.cfg
+
+# IDE
+**/.idea/
+**/.vscode/
+
+# Outputs
+**/output/*
+**/outputs/*
+**/videos/*
+**/wandb/*
+**/.neptune/*
+docker/artifacts/
+*.tmp
+
+# Doc Outputs
+**/docs/_build/*
+**/generated/*
+
+# Isaac-Sim packman
+_isaac_sim*
+_repo
+_build
+.lastformat
+
+# RL-Games
+**/runs/*
+**/logs/*
+**/recordings/*
+
+# Pre-Trained Checkpoints
+/.pretrained_checkpoints/
+
+# Teleop Recorded Dataset
+datasets
+
+# Deploy
+*.pt
+*.obj
+*.mtl
+*.STL
+**/env.yaml
+
+# Mimic
+*.npz
+*.csv
+*.onnx
+REF/
+
+# Ignore motion data except the AMP dataset.
+/data/*
+!/data/amp/
+!/data/amp/**
+
+# Keep all packaged robot assets, including meshes and USD files.
+!source/basic_loco_lib/basic_loco_lib/assets/
+!source/basic_loco_lib/basic_loco_lib/assets/**
+
+# Keep Python caches ignored even inside packaged assets.
+**/__pycache__/
+**/*.pyc

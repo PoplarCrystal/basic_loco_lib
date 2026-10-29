@@ -1,0 +1,1 @@
+"""Shared AMP agent configurations."""

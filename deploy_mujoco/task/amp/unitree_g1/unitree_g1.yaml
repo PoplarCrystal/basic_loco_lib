@@ -1,0 +1,77 @@
+# Unitree—G1 AMP sim2sim
+
+# -- paths -------------------------------------------------------------------- #
+# xml comes from the packaged assets (meshes in the same tree); policy
+# sits next to this yaml
+xml_path: "../../../../source/basic_loco_lib/basic_loco_lib/assets/unitree_g1/mjcf/g1.xml"
+policy: "policy.onnx"      # self-contained ONNX export with a single obs_history input
+
+# -- sim ---------------------------------------------------------------------- #
+# mujoco side
+simulation_dt: 0.005       # 200 Hz physics
+control_decimation: 4      # x4 -> 50 Hz control
+root_body_name: pelvis     # floating base; the camera tracks it
+initial_pos: [0.0, 0.0, 0.76]   # UNITREE_G1_29DOF_AMP_CFG init height
+viewer:
+  distance: 3.0
+  azimuth: 90
+  elevation: -45
+  lookat: [0.0, 0.0, 1.0]
+
+# joint names in mj order (== g1.xml joint order == order of every deploy array);
+# groups 6/6/3/7/7 = L-leg / R-leg / waist / L-arm / R-arm
+mj_joint_names:
+  [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint,
+   left_ankle_pitch_joint, left_ankle_roll_joint,
+   right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint,
+   right_ankle_pitch_joint, right_ankle_roll_joint,
+   waist_yaw_joint, waist_roll_joint, waist_pitch_joint,
+   left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint,
+   left_elbow_joint, left_wrist_roll_joint, left_wrist_pitch_joint, left_wrist_yaw_joint,
+   right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint,
+   right_elbow_joint, right_wrist_roll_joint, right_wrist_pitch_joint, right_wrist_yaw_joint]
+
+# isaaclab side: how the same joints are ordered in training / the policy ONNX.
+# joint_orders[backend] is the mj -> lab map (mj idx of each lab joint: physx
+# interleaves L/R, newton is the identity).
+joint_orders:
+  physx: [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11,
+    17, 24, 18, 25, 19, 26, 20, 27, 21, 28]
+  newton: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+    19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+
+# -- policy ------------------------------------------------------------------- #
+# backend = joint order of the policy ONNX (training backend; indexes joint_orders)
+backend: newton
+obs_history_length: 4      # checkpoint obs history, whole frames oldest-first -> 384-D input
+command_ranges:           # panel slider limits: vx, vy (m/s), wz (rad/s)
+  vx: [-1.5, 3.0]          # == training UniformVelocityCommand ranges
+  vy: [-1.0, 1.0]
+  wz: [-1.5708, 1.5708]
+# AMP actor obs terms carry scale: null (raw values feed the in-graph normalizer)
+ang_vel_scale: 1.0
+joint_vel_scale: 1.0
+
+# action side, all arrays in mj order: target = action * action_scale + default_joint_pos
+# PD gains from _motor_gains(armature) (kp = armature*(10*2pi)^2, kd = 4*armature*10*2pi);
+# action_scale = 0.25 * effort_limit / kp (UNITREE_G1_29DOF_AMP_ACTION_SCALE)
+stiffness: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5,
+            40.2, 99.1, 40.2, 99.1, 28.5, 28.5,
+            40.2, 28.5, 28.5,
+            14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8,
+            14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8]
+damping: [2.56, 6.31, 2.56, 6.31, 1.81, 1.81,
+          2.56, 6.31, 2.56, 6.31, 1.81, 1.81,
+          2.56, 1.81, 1.81,
+          0.907, 0.907, 0.907, 0.907, 0.907, 1.07, 1.07,
+          0.907, 0.907, 0.907, 0.907, 0.907, 1.07, 1.07]
+default_joint_pos: [-0.312, 0, 0, 0.669, -0.363, 0,
+                    -0.312, 0, 0, 0.669, -0.363, 0,
+                    0, 0, 0,
+                    0.2, 0.2, 0, 0.6, 0, 0, 0,
+                    0.2, -0.2, 0, 0.6, 0, 0, 0]
+action_scale: [0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
+               0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
+               0.548, 0.439, 0.439,
+               0.439, 0.439, 0.439, 0.439, 0.439, 0.0745, 0.0745,
+               0.439, 0.439, 0.439, 0.439, 0.439, 0.0745, 0.0745]
