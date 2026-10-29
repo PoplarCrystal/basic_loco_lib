@@ -20,7 +20,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import UniformNoiseCfg as Unoise
-from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, NewtonCollisionPipelineCfg, NewtonShapeCfg
 from isaaclab_physx.physics import PhysxCfg
 from isaaclab_tasks.utils import PresetCfg
 
@@ -44,7 +44,15 @@ class PhysicsCfg(PresetCfg):
             integrator="implicitfast",
             ls_parallel=True,
             ls_iterations=15,
+            # Use Newton collision detection for generated mesh terrain.
+            use_mujoco_contacts=False,
         ),
+        # collision_cfg=NewtonCollisionPipelineCfg(
+        #     # Scene-wide triangle-pair capacity; increase if overflow warnings appear.
+        #     max_triangle_pairs=2_500_000,
+        # ),
+        # # Nonzero collision margin for stable triangle-mesh terrain contacts.
+        # default_shape_cfg=NewtonShapeCfg(margin=0.01),
         num_substeps=1,
         debug_mode=False,
     )

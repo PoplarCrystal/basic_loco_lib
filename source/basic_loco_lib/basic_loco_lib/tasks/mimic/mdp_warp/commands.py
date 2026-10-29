@@ -35,6 +35,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 import warp as wp
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from isaaclab.utils import configclass
@@ -487,7 +488,10 @@ class MotionCommandWarp(MotionCommand):
             device=self.device,
         )
 
-    def _resample_command(self, env_ids):
+    def _resample_command(self, env_ids: Sequence[int] | slice):
+        # Normalize here too: the host mirror update below also needs explicit indices.
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         super()._resample_command(env_ids)
         if len(env_ids) > 0:
             self._sync_host_mirror(env_ids)

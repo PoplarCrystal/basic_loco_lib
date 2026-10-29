@@ -21,7 +21,7 @@ from isaaclab_experimental.managers import ObservationTermCfg as ObsTerm
 from isaaclab_experimental.managers import RewardTermCfg as RewTerm
 from isaaclab_experimental.managers import SceneEntityCfg
 from isaaclab_experimental.managers import TerminationTermCfg as DoneTerm
-from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, NewtonCollisionPipelineCfg, NewtonShapeCfg
 from isaaclab.sensors import ContactSensorCfg
 
 import basic_loco_lib.tasks.mimic.mdp_warp as mdp_warp
@@ -373,7 +373,15 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
                 integrator="implicitfast",
                 ls_parallel=True,
                 ls_iterations=15,
+                # Use Newton collision detection for generated mesh terrain.
+                use_mujoco_contacts=False,
             ),
+            # collision_cfg=NewtonCollisionPipelineCfg(
+            #     # Scene-wide triangle-pair capacity; increase if overflow warnings appear.
+            #     max_triangle_pairs=2_500_000,
+            # ),
+            # Nonzero collision margin for stable triangle-mesh terrain contacts.
+            # default_shape_cfg=NewtonShapeCfg(margin=0.01),
             num_substeps=1,
             debug_mode=False,
         )
