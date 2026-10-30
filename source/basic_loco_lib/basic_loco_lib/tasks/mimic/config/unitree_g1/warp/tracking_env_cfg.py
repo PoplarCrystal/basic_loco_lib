@@ -365,6 +365,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         physics=NewtonCfg(
             solver_cfg=MJWarpSolverCfg(
+                class_type="basic_loco_lib.utils.physics.mjwarp_manager:NewtonMJWarpQuietLSManager",
                 # 95 (copied from the velocity task) overflows in fallen poses during
                 njmax=128,
                 nconmax=20,
@@ -372,7 +373,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
                 impratio=1,
                 integrator="implicitfast",
                 ls_parallel=True,
-                ls_iterations=15,
+                ls_iterations=30,
                 # Use Newton collision detection for generated mesh terrain.
                 use_mujoco_contacts=False,
             ),

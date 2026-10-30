@@ -45,25 +45,9 @@ from basic_loco_lib.tasks.amp.mdp_warp.commands import WarpUniformVelocityComman
 class PhysicsCfg(PresetCfg):
     newton: NewtonCfg = NewtonCfg(
         solver_cfg=MJWarpSolverCfg(
-            # Linesearch-exhaustion prints are masked in the manager (URDF G1 hits the
-            # ls budget in a small fraction of envs; harmless — best alpha is used).
-            # Mesh feet (g1_meshfeet.urdf — swap the spawn asset_path in
-            # robots/unitree_amp.py to use them) cut the warnings 39->15 per
-            # 5x512 env-iters but do not eliminate them; capsule feet keep the
-            # asset identical to zsl's original AMP setup.
-            class_type="basic_loco_lib.tasks.amp.physics.mjwarp_manager:NewtonMJWarpQuietLSManager",
-            # The previous NewtonMJWarpStableManager (newton_cholesky pivot-floor patch,
-            # hard-pinned to mujoco-warp==3.11.0) was removed: the newton 1.7.0 stack
-            # provides the numerical stability it existed for (see basic_loco_lib
-            # doc/newton.md for the analysis; a copy stays archived in that repo).
-            # Solver budget aligned with the mimic tasks (defaults: solver="newton",
-            # tolerance=1e-6, iterations=100). The old zsl values (tolerance=1e-10,
-            # njmax=1024, nconmax=100) made the linesearch grind against its budget
-            # (~59 "linesearch iterations limit reached" warnings/iter @4096 envs on
-            # the newton 1.7.0 stack); mimic runs with these settings are near-zero.
-            # njmax/nconmax stay larger than mimic's 128/20: the URDF asset (capsule
-            # feet + self-collisions) measured njmax>=224, nconmax>=58 — newton would
-            # silently re-raise the caps (and 128 still overflowed nefc in fallen poses).
+            # Suppress line-search limit warnings; keep other warnings enabled.
+            class_type="basic_loco_lib.utils.physics.mjwarp_manager:NewtonMJWarpQuietLSManager",
+            # Extra contact capacity for capsule feet and self-collisions.
             njmax=256,
             nconmax=64,
             cone="pyramidal",
