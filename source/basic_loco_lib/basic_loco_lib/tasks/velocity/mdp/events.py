@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 def newton_randomize_rigid_body_material(
     env: "ManagerBasedEnv",
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     static_friction_range: tuple[float, float],
     restitution_range: tuple[float, float],
     asset_cfg: "SceneEntityCfg",
@@ -55,7 +55,7 @@ def newton_randomize_rigid_body_material(
 
     Args:
         env: Environment instance providing ``scene`` and ``device``.
-        env_ids: Subset of envs to randomize, or ``None`` for all envs.
+        env_ids: Index tensor or slice selecting envs, or ``None`` for all envs.
         static_friction_range: ``Uniform(low, high)`` for ``mu`` [unitless].
         restitution_range: ``Uniform(low, high)`` for restitution [unitless].
         asset_cfg: Selects the asset whose shape materials get randomized.
@@ -73,6 +73,8 @@ def newton_randomize_rigid_body_material(
 
     if env_ids is None:
         env_ids = torch.arange(env.scene.num_envs, device=device, dtype=torch.long)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.scene.num_envs, device=device, dtype=torch.long)[env_ids]
     else:
         env_ids = env_ids.to(device).long()
 

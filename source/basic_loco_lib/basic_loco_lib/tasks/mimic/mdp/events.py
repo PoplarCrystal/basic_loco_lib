@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 def randomize_joint_default_pos(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     asset_cfg: SceneEntityCfg,
     pos_distribution_params: tuple[float, float] | None = None,
     operation: Literal["add", "scale", "abs"] = "abs",
@@ -33,6 +33,8 @@ def randomize_joint_default_pos(
     # resolve environment ids
     if env_ids is None:
         env_ids = torch.arange(env.scene.num_envs, device=asset.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.scene.num_envs, device=asset.device)[env_ids]
 
     # resolve joint indices
     if asset_cfg.joint_ids == slice(None):

@@ -53,12 +53,14 @@ class MotionResetManager:
     def reset(
         self,
         env: ManagerBasedRLEnv,
-        env_ids: torch.Tensor | None,
+        env_ids: torch.Tensor | slice | None,
         motion_dir: str,
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> None:
-        if env_ids is None or isinstance(env_ids, slice):
+        if env_ids is None:
             env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+        elif isinstance(env_ids, slice):
+            env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)[env_ids]
 
         if len(env_ids) == 0:
             return
@@ -207,7 +209,7 @@ def init_motion_loader(
 
 def reset_from_motion_data(
     env: ManagerBasedRLEnv,
-    env_ids: torch.Tensor | None,
+    env_ids: torch.Tensor | slice | None,
     motion_dir: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
