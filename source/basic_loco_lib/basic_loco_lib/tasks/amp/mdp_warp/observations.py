@@ -7,7 +7,7 @@ from isaaclab_experimental.envs.utils.io_descriptors import generic_io_descripto
 from isaaclab_experimental.managers import SceneEntityCfg
 from isaaclab_newton.assets.kernels import get_link_vel_from_root_com_vel_func
 
-from basic_loco_lib.tasks.mimic.mdp_warp.warp_utils import quat_conj_xyzw, quat_mul_xyzw, quat_rotate_inv_xyzw
+from basic_loco_lib.tasks.amp.mdp_warp.warp_utils import quat_conj_xyzw, quat_mul_xyzw, quat_rotate_inv_xyzw
 
 
 def _body_ids(cfg: SceneEntityCfg, key: str, device: str) -> wp.array:

@@ -6,7 +6,7 @@ import warp as wp
 from isaaclab_experimental.managers import SceneEntityCfg
 from isaaclab_experimental.managers.termination_manager import TerminationManager
 
-from basic_loco_lib.tasks.mimic.mdp_warp.warp_utils import quat_rotate_inv_xyzw
+from basic_loco_lib.tasks.amp.mdp_warp.warp_utils import quat_rotate_inv_xyzw
 
 from .utils import _wp
 
