@@ -84,8 +84,7 @@ def main():
     xml_path = config_dir / config["xml_path"]
     sim_dt = config["simulation_dt"]
     decimation = config["control_decimation"]
-    # newton-variant checkpoints set history_length=4 on the policy obs group
-    # (whole obs frames, oldest first); the warp task has none
+    # Mimic and mimic-wm exports consume whole observation frames, oldest first.
     obs_history_length = int(config.get("obs_history_length", 1))
 
     # joint names in mj order (== mjcf joint order == order of every deploy

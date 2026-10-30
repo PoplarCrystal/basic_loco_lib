@@ -5,9 +5,9 @@
 # sit next to this yaml
 xml_path: "../../../../source/basic_loco_lib/basic_loco_lib/assets/unitree_g1/mjcf/g1.xml"
 policy: "policy.onnx"      # self-contained ONNX export with a single obs_history input
-motion: "G1_Take_102.bvh_60hz.physx.npz"
+motion: "G1_Take_102.bvh_60hz.newton.npz"
 # backend = joint order of the policy ONNX (training backend; indexes joint_orders)
-backend: physx
+backend: newton
 
 # -- sim ---------------------------------------------------------------------- #
 # mujoco side

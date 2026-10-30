@@ -55,7 +55,7 @@ def _walk_packages(
 
 def import_packages():
     sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}/source/basic_loco_lib/basic_loco_lib/tasks/")
-    for package in ["mimic.config", "velocity.config", "amp.config"]:
+    for package in ["mimic.config", "mimic_wm.config", "velocity.config", "amp.config"]:
         package = importlib.import_module(package)
         for _ in _walk_packages(package.__path__, package.__name__ + "."):
             pass

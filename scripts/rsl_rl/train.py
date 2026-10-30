@@ -213,7 +213,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     torch.manual_seed(agent_cfg.seed)
 
     # create runner from rsl-rl
-    if getattr(agent_cfg, "amp_reward_coef", 0.0) > 0:
+    if getattr(agent_cfg, "mimic_wm", False):
+        from basic_loco_lib.algo.mimic_wm import MimicWmRunner
+
+        runner = MimicWmRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    elif getattr(agent_cfg, "amp_reward_coef", 0.0) > 0:
         from basic_loco_lib.algo.amp import AmpOnPolicyRunner
 
         runner = AmpOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)

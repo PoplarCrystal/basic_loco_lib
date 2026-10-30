@@ -7,9 +7,9 @@
 
 ## 概述
 
-`basic_loco_lib` 是一个基于 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 的机器人基础步态库，包含 **Velocity（速度跟踪）、Mimic（动作模仿）、AMP（对抗式运动先验）** 等基础任务，用于步态策略的训练、回放与部署。目前主要支持 **Unitree G1（29 自由度）**，以 Newton（MuJoCo-Warp）为主要物理后端，部分任务也支持 PhysX。
+`basic_loco_lib` 是一个基于 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 的机器人基础步态库，包含 **Velocity（速度跟踪）、Mimic（动作模仿）、AMP（对抗式运动先验）、Mimic-WM（世界模型动作模仿）** 等基础任务，用于步态策略的训练、回放与部署。目前主要支持 **Unitree G1（29 自由度）**，以 Newton（MuJoCo-Warp）为主要物理后端，部分任务也支持 PhysX。
 
-项目使用 `rsl_rl` 进行 PPO 训练，提供从动作数据准备、策略训练到 ONNX 导出和 MuJoCo sim2sim 验证的完整流程，方便复现基础任务和扩展新的步态。
+项目使用 `rsl_rl` 进行 PPO 训练，Mimic-WM 使用独立的世界模型学习器，提供从动作数据准备、策略训练到 ONNX 导出和 MuJoCo sim2sim 验证的完整流程，方便复现基础任务和扩展新的步态。
 
 | 任务 | 任务 ID | 支持后端 | 说明 |
 |---|---|---|---|
@@ -17,6 +17,8 @@
 | Velocity Warp | `Unitree-G1-Velocity-Warp`、`Unitree-G1-Velocity-Flat-Warp` | Newton | 基于 Warp 优化的速度跟踪任务 |
 | Mimic | `Unitree-G1-Mimic` | Newton / PhysX | 跟踪由 CSV 转换得到的 NPZ 参考动作 |
 | Mimic Warp | `Unitree-G1-Mimic-Warp` | Newton | 基于 Warp 优化的动作跟踪任务 |
+| Mimic-WM | `Unitree-G1-Mimic-WM` | Newton | 独立动作跟踪任务，通过世界模型和想象 rollout 训练策略 |
+| Mimic-WM Warp | `Unitree-G1-Mimic-WM-Warp` | Newton | 使用相同 WM 学习器的 Warp 版本 |
 | AMP | `Unitree-G1-AMP-Loco` | Newton / PhysX | 结合速度指令与动作数据集，通过对抗式运动先验学习步态风格 |
 | AMP Warp | `Unitree-G1-AMP-Loco-Warp` | Newton | 基于 Warp 优化的 AMP 任务 |
 
@@ -105,6 +107,22 @@ python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-Warp --viz none \
     --motion_file /path/to/custom_motion.newton.npz
 ```
 
+### Mimic-WM：世界模型动作模仿
+
+Mimic-WM 的任务配置和 MDP 独立维护，策略使用 mimic 风格的观测和四帧历史，
+奖励参考 SuperMimic 的可微跟踪奖励。训练通过动力学模型中的想象 rollout 更新策略，
+不使用 PPO。push 事件保留为注释；执行噪声不进入策略的上一帧动作观测。
+
+```bash
+# Newton：标准版
+python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-WM --viz none presets=newton \
+    --motion_file data/unitree_g1/G1_Take_102.bvh_60hz.newton.npz
+
+# Newton / Warp 版
+python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-WM-Warp --viz none \
+    --motion_file data/unitree_g1/G1_Take_102.bvh_60hz.newton.npz
+```
+
 ### AMP：对抗式运动先验
 
 ```bash
@@ -131,6 +149,13 @@ python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-Warp \
     --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/ckpt.pt --viz viser
 python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-Warp \
     --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
+
+# Mimic-WM：回放 / 仅导出，任务 ID 与训练保持一致
+python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-WM-Warp \
+    --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/last.pt --viz viser
+python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-WM-Warp \
+    --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/last.pt \
+    --export_only --num_envs 1 --viz none
 
 # Velocity：回放 / 仅导出
 python scripts/rsl_rl/play.py --task Unitree-G1-Velocity-Flat-Warp \
@@ -186,16 +211,27 @@ cd deploy_mujoco/task/mimic
 python deploy_mujoco.py unitree_g1
 ```
 
+Mimic-WM **复用同一个** `deploy_mujoco/task/mimic/deploy_mujoco.py`。
+先使用训练时的 Mimic-WM 任务 ID 导出策略；部署只需要 actor，不需要 WM 和 replay buffer。
+导出的 FP32 ONNX 输入为 `obs_history`（4 × 154 = 616 维），输出为 `actions`（29 维）。
+在现有 mimic YAML 中设置训练后端（上面示例为 `backend: newton`），
+把 `motion` 改为匹配的 `.newton.npz`，把 `policy` 指向 WM actor 的 ONNX。
+保持 `obs_history_length: 4`、PD 增益、动作缩放和关节映射与训练一致。
+仓库中的 mimic YAML 默认使用 PhysX，使用 Newton 策略前需要改好后端和动作路径。
+这里验证的是部署接口兼容，实际跟踪效果仍取决于 checkpoint 的训练质量。
+
 重新训练后，使用 `--export_only` 导出策略，并更新对应部署目录下的 `policy.onnx`。部署时的观测顺序、历史长度、缩放和关节映射必须与训练配置一致；具体约定见各任务 `deploy_mujoco.py` 的文件说明。扩展机器人时，可参考现有目录添加机器人 YAML、模型和策略文件。
 
 ## 致谢
 
-本项目的开发参考了以下开源项目，感谢各项目作者与社区的贡献：
+本项目的开发参考了以下论文和开源项目，感谢各作者与社区的贡献：
 
 - [AMP_mjlab](https://github.com/ccrpRepo/AMP_mjlab)
 - [Isaac Lab](https://github.com/isaac-sim/IsaacLab)
 - [Unitree RL Lab（isaaclab3.0 分支）](https://github.com/unitreerobotics/unitree_rl_lab/tree/isaaclab3.0)
 - [Whole-Body Tracking](https://github.com/HybridRobotics/whole_body_tracking)
+- [SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model](https://arxiv.org/abs/2610.28480)：世界模型策略训练方法的参考。
+- [Uni-SuperMimic](https://github.com/Motphys/Uni-SuperMimic)：基于 UniLab 的 SuperMimic 独立复现工程，为本项目 Mimic-WM 的实现和可微奖励提供参考。
 
 动作数据致谢：
 
