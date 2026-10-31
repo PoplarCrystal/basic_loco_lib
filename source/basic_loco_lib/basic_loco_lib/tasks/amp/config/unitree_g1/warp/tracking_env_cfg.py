@@ -26,14 +26,16 @@ from isaaclab.utils import configclass
 from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 from isaaclab_tasks.utils import PresetCfg
 
-import basic_loco_lib.tasks.amp.mdp_warp as amp_warp
-import basic_loco_lib.tasks.mimic.mdp_warp as mdp_warp
 from basic_loco_lib import PROJECT_DIR
 from basic_loco_lib.robots.unitree_amp import (
     UNITREE_G1_29DOF_AMP_ACTION_SCALE,
 )
 from basic_loco_lib.robots.unitree_amp import UNITREE_G1_29DOF_AMP_CFG as ROBOT_CFG
+from basic_loco_lib.tasks.amp.mdp_warp import events as amp_events
 from basic_loco_lib.tasks.amp.mdp_warp import observations as amp_obs
+from basic_loco_lib.tasks.amp.mdp_warp import obs_history as amp_history
+from basic_loco_lib.tasks.amp.mdp_warp import rewards as amp_rewards
+from basic_loco_lib.tasks.amp.mdp_warp import terminations as amp_terminations
 from basic_loco_lib.tasks.amp.mdp_warp.commands import WarpUniformVelocityCommand
 
 ##
@@ -45,25 +47,9 @@ from basic_loco_lib.tasks.amp.mdp_warp.commands import WarpUniformVelocityComman
 class PhysicsCfg(PresetCfg):
     newton: NewtonCfg = NewtonCfg(
         solver_cfg=MJWarpSolverCfg(
-            # Linesearch-exhaustion prints are masked in the manager (URDF G1 hits the
-            # ls budget in a small fraction of envs; harmless — best alpha is used).
-            # Mesh feet (g1_meshfeet.urdf — swap the spawn asset_path in
-            # robots/unitree_amp.py to use them) cut the warnings 39->15 per
-            # 5x512 env-iters but do not eliminate them; capsule feet keep the
-            # asset identical to zsl's original AMP setup.
-            class_type="basic_loco_lib.tasks.amp.physics.mjwarp_manager:NewtonMJWarpQuietLSManager",
-            # The previous NewtonMJWarpStableManager (newton_cholesky pivot-floor patch,
-            # hard-pinned to mujoco-warp==3.11.0) was removed: the newton 1.7.0 stack
-            # provides the numerical stability it existed for (see basic_loco_lib
-            # doc/newton.md for the analysis; a copy stays archived in that repo).
-            # Solver budget aligned with the mimic tasks (defaults: solver="newton",
-            # tolerance=1e-6, iterations=100). The old zsl values (tolerance=1e-10,
-            # njmax=1024, nconmax=100) made the linesearch grind against its budget
-            # (~59 "linesearch iterations limit reached" warnings/iter @4096 envs on
-            # the newton 1.7.0 stack); mimic runs with these settings are near-zero.
-            # njmax/nconmax stay larger than mimic's 128/20: the URDF asset (capsule
-            # feet + self-collisions) measured njmax>=224, nconmax>=58 — newton would
-            # silently re-raise the caps (and 128 still overflowed nefc in fallen poses).
+            # Suppress line-search limit warnings; keep other warnings enabled.
+            class_type="basic_loco_lib.utils.physics.mjwarp_manager:NewtonMJWarpQuietLSManager",
+            # Extra contact capacity for capsule feet and self-collisions.
             njmax=256,
             nconmax=64,
             cone="pyramidal",
@@ -183,33 +169,33 @@ class ObservationsCfg:
     class ActorCfg(ObsGroup):
         # term order mirrors the velocity task's policy group
         command = ObsTerm(
-            func=mdp_warp.make_history_obs(warp_mdp.generated_commands, 4, frame_dim=3),
+            func=amp_history.make_history_obs(warp_mdp.generated_commands, 4, frame_dim=3),
             params={"command_name": "twist"},
             history_length=0,
         )
         projected_gravity = ObsTerm(
-            func=mdp_warp.make_history_obs(
+            func=amp_history.make_history_obs(
                 warp_mdp.projected_gravity, 4, frame_dim=3, noise=Unoise(n_min=-0.05, n_max=0.05)
             ),
             history_length=0,
         )
         base_ang_vel = ObsTerm(
-            func=mdp_warp.make_history_obs(warp_mdp.base_ang_vel, 4, frame_dim=3, noise=Unoise(n_min=-0.2, n_max=0.2)),
+            func=amp_history.make_history_obs(warp_mdp.base_ang_vel, 4, frame_dim=3, noise=Unoise(n_min=-0.2, n_max=0.2)),
             history_length=0,
         )
         joint_pos = ObsTerm(
-            func=mdp_warp.make_history_obs(
+            func=amp_history.make_history_obs(
                 warp_mdp.joint_pos_rel, 4, frame_dim=29, noise=Unoise(n_min=-0.01, n_max=0.01)
             ),
             history_length=0,
         )
         joint_vel = ObsTerm(
-            func=mdp_warp.make_history_obs(
+            func=amp_history.make_history_obs(
                 warp_mdp.joint_vel_rel, 4, frame_dim=29, noise=Unoise(n_min=-0.5, n_max=0.5)
             ),
             history_length=0,
         )
-        actions = ObsTerm(func=mdp_warp.make_history_obs(warp_mdp.last_action, 4, frame_dim=29), history_length=0)
+        actions = ObsTerm(func=amp_history.make_history_obs(warp_mdp.last_action, 4, frame_dim=29), history_length=0)
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -219,20 +205,20 @@ class ObservationsCfg:
     class CriticCfg(ObsGroup):
         # term order mirrors the velocity task's critic group
         command = ObsTerm(
-            func=mdp_warp.make_history_obs(warp_mdp.generated_commands, 4, frame_dim=3),
+            func=amp_history.make_history_obs(warp_mdp.generated_commands, 4, frame_dim=3),
             params={"command_name": "twist"},
             history_length=0,
         )
         projected_gravity = ObsTerm(
-            func=mdp_warp.make_history_obs(warp_mdp.projected_gravity, 4, frame_dim=3), history_length=0
+            func=amp_history.make_history_obs(warp_mdp.projected_gravity, 4, frame_dim=3), history_length=0
         )
-        base_lin_vel = ObsTerm(func=mdp_warp.make_history_obs(warp_mdp.base_lin_vel, 4, frame_dim=3), history_length=0)
-        base_ang_vel = ObsTerm(func=mdp_warp.make_history_obs(warp_mdp.base_ang_vel, 4, frame_dim=3), history_length=0)
-        joint_pos = ObsTerm(func=mdp_warp.make_history_obs(warp_mdp.joint_pos_rel, 4, frame_dim=29), history_length=0)
-        joint_vel = ObsTerm(func=mdp_warp.make_history_obs(warp_mdp.joint_vel_rel, 4, frame_dim=29), history_length=0)
-        actions = ObsTerm(func=mdp_warp.make_history_obs(warp_mdp.last_action, 4, frame_dim=29), history_length=0)
+        base_lin_vel = ObsTerm(func=amp_history.make_history_obs(warp_mdp.base_lin_vel, 4, frame_dim=3), history_length=0)
+        base_ang_vel = ObsTerm(func=amp_history.make_history_obs(warp_mdp.base_ang_vel, 4, frame_dim=3), history_length=0)
+        joint_pos = ObsTerm(func=amp_history.make_history_obs(warp_mdp.joint_pos_rel, 4, frame_dim=29), history_length=0)
+        joint_vel = ObsTerm(func=amp_history.make_history_obs(warp_mdp.joint_vel_rel, 4, frame_dim=29), history_length=0)
+        actions = ObsTerm(func=amp_history.make_history_obs(warp_mdp.last_action, 4, frame_dim=29), history_length=0)
         body_pos_b = ObsTerm(
-            func=mdp_warp.make_history_obs(amp_obs.robot_body_pos_b, 4, frame_dim=39),
+            func=amp_history.make_history_obs(amp_obs.robot_body_pos_b, 4, frame_dim=39),
             history_length=0,
             params={
                 "anchor_cfg": SceneEntityCfg("robot", body_names=_ANCHOR_NAME),
@@ -240,7 +226,7 @@ class ObservationsCfg:
             },
         )
         body_ori_b = ObsTerm(
-            func=mdp_warp.make_history_obs(amp_obs.robot_body_ori_b, 4, frame_dim=78),
+            func=amp_history.make_history_obs(amp_obs.robot_body_ori_b, 4, frame_dim=78),
             history_length=0,
             params={
                 "anchor_cfg": SceneEntityCfg("robot", body_names=_ANCHOR_NAME),
@@ -302,7 +288,7 @@ _RECOVERY_DIR = str(_MOTION_BASE / "Recovery")
 @configclass
 class EventCfg:
     init_motion_loader = EventTerm(
-        func=amp_warp.init_motion_loader_warp,
+        func=amp_events.init_motion_loader_warp,
         mode="startup",
         params={
             "motion_dir": _MOTION_DIR,
@@ -314,7 +300,7 @@ class EventCfg:
         },
     )
     reset_from_motion = EventTerm(
-        func=amp_warp.reset_from_motion_data_warp,
+        func=amp_events.reset_from_motion_data_warp,
         mode="reset",
         params={
             "motion_dir": _MOTION_DIR,
@@ -346,7 +332,7 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     track_anchor_lin_vel = RewTerm(
-        func=amp_warp.track_anchor_linear_velocity,
+        func=amp_rewards.track_anchor_linear_velocity,
         weight=1.0,
         params={
             "command_name": "twist",
@@ -357,7 +343,7 @@ class RewardsCfg:
         },
     )
     track_anchor_ang_vel = RewTerm(
-        func=amp_warp.track_anchor_angular_velocity,
+        func=amp_rewards.track_anchor_angular_velocity,
         weight=1.0,
         params={
             "command_name": "twist",
@@ -368,12 +354,12 @@ class RewardsCfg:
         },
     )
     track_root_height = RewTerm(
-        func=amp_warp.track_root_height,
+        func=amp_rewards.track_root_height,
         weight=1.0,
         params={"std": 0.3, "mask_delay": True, "delay_env_rew_ratio": 3.5},
     )
     body_ang_vel_xy = RewTerm(
-        func=amp_warp.body_ang_vel_xy_l2,
+        func=amp_rewards.body_ang_vel_xy_l2,
         weight=0.5,
         params={
             "std": 3.14,
@@ -397,7 +383,7 @@ class RewardsCfg:
 class TerminationsCfg:
     time_out = DoneTerm(func=warp_mdp.time_out, time_out=True)
     bad_orientation = DoneTerm(
-        func=amp_warp.bad_orientation,
+        func=amp_terminations.bad_orientation,
         params={"limit_angle": math.radians(70.0)},
     )
     bad_root_height = DoneTerm(

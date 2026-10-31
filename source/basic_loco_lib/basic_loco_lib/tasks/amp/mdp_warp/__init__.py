@@ -10,3 +10,5 @@ from .events import *
 from .observations import *
 from .rewards import *
 from .terminations import *
+
+from .obs_history import make_history_obs, resolve_dones

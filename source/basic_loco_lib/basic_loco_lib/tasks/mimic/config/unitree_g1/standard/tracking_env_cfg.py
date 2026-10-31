@@ -37,13 +37,14 @@ class PhysicsCfg(PresetCfg):
     physx: PhysxCfg = PhysxCfg(gpu_max_rigid_patch_count=10 * 2**15)
     newton: NewtonCfg = NewtonCfg(
         solver_cfg=MJWarpSolverCfg(
+            class_type="basic_loco_lib.utils.physics.mjwarp_manager:NewtonMJWarpQuietLSManager",
             njmax=128,
             nconmax=20,
             cone="pyramidal",
             impratio=1,
             integrator="implicitfast",
             ls_parallel=True,
-            ls_iterations=15,
+            ls_iterations=30,
             # Use Newton collision detection for generated mesh terrain.
             use_mujoco_contacts=False,
         ),

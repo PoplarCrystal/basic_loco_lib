@@ -3,7 +3,7 @@
 import warp as wp
 from isaaclab_experimental.managers import SceneEntityCfg
 
-from basic_loco_lib.tasks.mimic.mdp_warp.warp_utils import (
+from basic_loco_lib.tasks.amp.mdp_warp.warp_utils import (
     quat_rotate_inv_xyzw,
     quat_rotate_xyzw,
     yaw_quat_xyzw,
