@@ -90,6 +90,8 @@ class MimicWmBridge:
         done = self._wm_done.clone()
         s1 = torch.where(done[:, None], self._wm_s1, flatten_state(self._wm_state()))
         reward = as_torch(self.reward_buf).clone()
+        # Motion resampling ends a WM segment, but only environment resets end an episode.
+        episode_done = as_torch(result[2]) | as_torch(result[3])
         self._wm_ep_return += reward
         self._wm_ep_age += 1
         transition = {
@@ -100,14 +102,14 @@ class MimicWmBridge:
             "done": done,
             "term": done & as_torch(self.reset_terminated),
         }
-        if done.any():
-            transition["ep_len"] = self._wm_ep_age[done].float().clone()
-            transition["ep_ret"] = self._wm_ep_return[done].clone()
+        if episode_done.any():
+            transition["ep_len"] = self._wm_ep_age[episode_done].float().clone()
+            transition["ep_ret"] = self._wm_ep_return[episode_done].clone()
             transition["ep_ret_norm"] = (
-                self._wm_ep_return[done] / self._wm_ep_age[done] / self.mimic_wm_mdp.max_step_reward
+                self._wm_ep_return[episode_done] / self._wm_ep_age[episode_done] / self.mimic_wm_mdp.max_step_reward
             ).clone()
-        self._wm_ep_age[done] = 0
-        self._wm_ep_return[done] = 0
+        self._wm_ep_age[episode_done] = 0
+        self._wm_ep_return[episode_done] = 0
         self.extras[MIMIC_WM_TRANSITION_KEY] = transition
         self.extras[MIMIC_WM_STATE_KEY] = self._wm_info()
         return result
