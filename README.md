@@ -7,9 +7,9 @@ English | [中文](README_zh.md)
 
 ## Overview
 
-`basic_loco_lib` is a basic robot locomotion library built on [Isaac Lab](https://github.com/isaac-sim/IsaacLab). It includes **Velocity (velocity tracking), Mimic (motion imitation), and AMP (Adversarial Motion Priors)** tasks for training, playing back, and deploying locomotion policies. The library currently focuses on the **Unitree G1 (29 DoF)**, with Newton (MuJoCo-Warp) as the primary physics backend and PhysX support for selected tasks.
+`basic_loco_lib` is a basic robot locomotion library built on [Isaac Lab](https://github.com/isaac-sim/IsaacLab). It includes **Velocity (velocity tracking), Mimic (motion imitation), AMP (Adversarial Motion Priors), and Mimic-WM (world-model motion imitation)** tasks for training, playing back, and deploying locomotion policies. The library currently focuses on the **Unitree G1 (29 DoF)**, with Newton (MuJoCo-Warp) as the primary physics backend and PhysX support for selected tasks.
 
-The project uses `rsl_rl` for PPO training and provides a complete workflow from motion data preparation and policy training to ONNX export and MuJoCo sim2sim validation, making it easier to reproduce basic tasks and develop new gaits.
+The project uses `rsl_rl` for PPO training and a dedicated world-model learner for Mimic-WM, and provides a complete workflow from motion data preparation and policy training to ONNX export and MuJoCo sim2sim validation, making it easier to reproduce basic tasks and develop new gaits.
 
 | Task | Task IDs | Supported backends | Description |
 |---|---|---|---|
@@ -17,6 +17,8 @@ The project uses `rsl_rl` for PPO training and provides a complete workflow from
 | Velocity Warp | `Unitree-G1-Velocity-Warp`, `Unitree-G1-Velocity-Flat-Warp` | Newton | Velocity tracking tasks optimized with Warp |
 | Mimic | `Unitree-G1-Mimic` | Newton / PhysX | Track reference motions stored as NPZ files converted from CSV |
 | Mimic Warp | `Unitree-G1-Mimic-Warp` | Newton | Motion tracking optimized with Warp |
+| Mimic-WM | `Unitree-G1-Mimic-WM` | Newton | Independent motion tracking task trained with learned dynamics and imagined rollouts |
+| Mimic-WM Warp | `Unitree-G1-Mimic-WM-Warp` | Newton | Warp environment with the same world-model learner |
 | AMP | `Unitree-G1-AMP-Loco` | Newton / PhysX | Learn locomotion styles through adversarial motion priors using velocity commands and a motion dataset |
 | AMP Warp | `Unitree-G1-AMP-Loco-Warp` | Newton | AMP locomotion optimized with Warp |
 
@@ -105,6 +107,24 @@ python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-Warp --viz none \
     --motion_file /path/to/custom_motion.newton.npz
 ```
 
+### Mimic-WM: world-model motion imitation
+
+Mimic-WM defines its own task and MDP. It uses mimic-style policy observations
+and four-frame history, with a SuperMimic-style differentiable tracking reward.
+Training fits a dynamics model and optimizes the policy in imagined rollouts;
+it does not use PPO. Push events are commented out, and execution noise is not
+fed back as the policy's previous action.
+
+```bash
+# Newton: standard variant
+python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-WM --viz none presets=newton \
+    --motion_file data/unitree_g1/G1_Take_102.bvh_60hz.newton.npz
+
+# Newton / Warp variant
+python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-WM-Warp --viz none \
+    --motion_file data/unitree_g1/G1_Take_102.bvh_60hz.newton.npz
+```
+
 ### AMP: Adversarial Motion Priors
 
 ```bash
@@ -131,6 +151,13 @@ python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-Warp \
     --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/ckpt.pt --viz viser
 python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-Warp \
     --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
+
+# Mimic-WM: playback / export only (use the task ID used for training)
+python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-WM-Warp \
+    --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/last.pt --viz viser
+python scripts/rsl_rl/play.py --task Unitree-G1-Mimic-WM-Warp \
+    --motion_file /path/to/custom_motion.newton.npz --checkpoint /path/to/last.pt \
+    --export_only --num_envs 1 --viz none
 
 # Velocity: playback / export only
 python scripts/rsl_rl/play.py --task Unitree-G1-Velocity-Flat-Warp \
@@ -186,16 +213,29 @@ cd deploy_mujoco/task/mimic
 python deploy_mujoco.py unitree_g1
 ```
 
+Mimic-WM reuses **the same** `deploy_mujoco/task/mimic/deploy_mujoco.py`.
+Export with the matching Mimic-WM task ID first; only the actor is deployed,
+without the WM or replay buffer. The exported FP32 ONNX uses `obs_history` (616
+values: 4 × 154) and `actions` (29 values). Set the existing mimic YAML to the
+training backend (`backend: newton` for the examples above), set `motion` to
+the matching `.newton.npz`, and point `policy` to the WM actor ONNX. Keep
+`obs_history_length: 4`, PD gains, action scaling and joint mappings consistent.
+The checked-in mimic YAML defaults to PhysX, so update those backend/motion
+fields before using a Newton-trained WM policy. This shares the deployment
+interface, not a guarantee of tracking quality for every trained checkpoint.
+
 After retraining, export the policy with `--export_only` and update `policy.onnx` in the corresponding deployment directory. Observation order, history length, scaling, and joint mappings must match the training configuration; see each task's `deploy_mujoco.py` docstring for details. To add another robot, use the existing directories as a reference and provide its YAML configuration, model, and policy files.
 
 ## Acknowledgments
 
-This project builds on ideas and implementations from the following open-source projects. We thank their authors and communities for their contributions:
+This project builds on ideas and implementations from the following papers and open-source projects. We thank their authors and communities for their contributions:
 
 - [AMP_mjlab](https://github.com/ccrpRepo/AMP_mjlab)
 - [Isaac Lab](https://github.com/isaac-sim/IsaacLab)
 - [Unitree RL Lab (isaaclab3.0 branch)](https://github.com/unitreerobotics/unitree_rl_lab/tree/isaaclab3.0)
 - [Whole-Body Tracking](https://github.com/HybridRobotics/whole_body_tracking)
+- [SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model](https://arxiv.org/abs/2610.28480): reference for world-model-based policy training.
+- [Uni-SuperMimic](https://github.com/Motphys/Uni-SuperMimic): an independent reproduction of SuperMimic on UniLab, referenced for the Mimic-WM implementation and differentiable rewards.
 
 Motion data acknowledgments:
 
