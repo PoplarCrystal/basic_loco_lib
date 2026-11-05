@@ -50,7 +50,7 @@ class RslRlAmpRunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 100001
     save_interval = 100
-    experiment_name = "g1_amp_locomotion"
+    experiment_name = "g1_amp"
     obs_groups = {"actor": ["actor"], "critic": ["critic"]}
 
     # AMP-specific parameters
@@ -93,5 +93,5 @@ def g1_amp_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
 def g1_amp_warp_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
     """Keep Warp runs separate from standard runs when selecting checkpoints."""
     cfg = g1_amp_ppo_runner_cfg()
-    cfg.experiment_name = "g1_amp_locomotion_warp"
+    cfg.experiment_name = "g1_amp_warp"
     return cfg
