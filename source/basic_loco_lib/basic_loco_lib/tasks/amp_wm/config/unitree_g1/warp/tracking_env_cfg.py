@@ -320,10 +320,12 @@ class RewardsCfg:
             "body_cfg": SceneEntityCfg("robot", body_names="pelvis"),
         },
     )
-    joint_acc = RewTerm(func=warp_mdp.joint_acc_l2, weight=-2.5e-7)
+    # Only terms the world model reproduces: ``joint_acc`` and the
+    # ``is_terminated`` penalty have no differentiable counterpart in
+    # ``diff/mdp.py`` (termination is modelled by ``soft_termination``), so
+    # the environment reward must not include them either.
     joint_limit = RewTerm(func=warp_mdp.joint_pos_limits, weight=-10.0)
     action_rate = RewTerm(func=warp_mdp.action_rate_l2, weight=-0.01)
-    is_terminated = RewTerm(func=warp_mdp.is_terminated, weight=-200.0)
 
 
 ##
