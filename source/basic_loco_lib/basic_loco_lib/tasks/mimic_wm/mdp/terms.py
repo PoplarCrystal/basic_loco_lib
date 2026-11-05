@@ -1,4 +1,15 @@
-"""SuperMimic-style reward evaluated on the original mimic environment."""
+"""Reward terms exposing the differentiable SuperMimic objective to the env.
+
+The environment reward must equal the reward the world-model learner optimises
+in imagination, so these terms read the components of
+:meth:`basic_loco_lib.tasks.mimic_wm.diff.mdp.DiffMDP.reward` instead of
+re-implementing the tracking formula. ``RewardManager`` applies each term's
+weight and ``dt``; the config weights mirror ``RewardCfg`` in
+``diff/mdp.py``, so their weighted sum reproduces the training reward exactly.
+
+All terms of one control step share a single ``DiffMDP.reward`` evaluation
+through a small cache: ``RewardManager`` calls every active term back to back.
+"""
 import torch
 import warp as wp
 
@@ -7,9 +18,67 @@ def as_torch(value):
     return value if torch.is_tensor(value) else wp.to_torch(value)
 
 
-def mimic_wm_reward(env):
+def _reward_terms(env):
+    """Evaluate the differentiable reward components once per control step."""
     mdp = env.mimic_wm_mdp
-    frames = (env.command_manager.get_term('motion').time_steps + 1).clamp(max=mdp.motion.num_frames-1)
-    # RewardManager applies dt; DiffMDP already returns a dt-weighted reward.
-    return mdp.reward(env._wm_state(), frames, as_torch(env.action_manager.action),
-                      as_torch(env.action_manager.prev_action)) / env.step_dt
+    step = env.common_step_counter
+    cached = getattr(env, "_mimic_wm_reward_terms", None)
+    if cached is not None and cached[0] == step:
+        return cached[1]
+    command = env.command_manager.get_term('motion')
+    # The WM transition ends on the next reference frame (DiffMDP rewards the
+    # post-step state with ``frames + 1``), unlike the mimic task reward terms.
+    frames = (command.time_steps + 1).clamp(max=mdp.motion.num_frames - 1)
+    _, terms = mdp.reward(
+        env._wm_state(),
+        frames,
+        as_torch(env.action_manager.action),
+        as_torch(env.action_manager.prev_action),
+        terms=True,
+    )
+    env._mimic_wm_reward_terms = (step, terms)
+    return terms
+
+
+def wm_motion_global_anchor_pos(env):
+    return _reward_terms(env)["motion_global_anchor_pos"]
+
+
+def wm_motion_global_anchor_ori(env):
+    return _reward_terms(env)["motion_global_anchor_ori"]
+
+
+def wm_motion_body_pos(env):
+    return _reward_terms(env)["motion_body_pos"]
+
+
+def wm_motion_body_ori(env):
+    return _reward_terms(env)["motion_body_ori"]
+
+
+def wm_motion_body_lin_vel(env):
+    return _reward_terms(env)["motion_body_lin_vel"]
+
+
+def wm_motion_body_ang_vel(env):
+    return _reward_terms(env)["motion_body_ang_vel"]
+
+
+def wm_action_rate(env):
+    return _reward_terms(env)["action_rate"]
+
+
+def wm_joint_limit(env):
+    return _reward_terms(env)["joint_limit"]
+
+
+__all__ = [
+    "wm_action_rate",
+    "wm_joint_limit",
+    "wm_motion_body_ang_vel",
+    "wm_motion_body_lin_vel",
+    "wm_motion_body_ori",
+    "wm_motion_body_pos",
+    "wm_motion_global_anchor_ori",
+    "wm_motion_global_anchor_pos",
+]

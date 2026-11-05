@@ -20,6 +20,16 @@ from .rewards import (
     motion_relative_body_position_error_exp,
 )
 from .terminations import bad_anchor_ori, bad_anchor_pos_z_only, bad_motion_body_pos_z_only
+from .terms import (
+    wm_action_rate,
+    wm_joint_limit,
+    wm_motion_body_ang_vel,
+    wm_motion_body_lin_vel,
+    wm_motion_body_ori,
+    wm_motion_body_pos,
+    wm_motion_global_anchor_ori,
+    wm_motion_global_anchor_pos,
+)
 
 # Declare this package as Warp-native while preserving real import paths for
 # config serialization. The frontend identifies native terms by package prefix.
