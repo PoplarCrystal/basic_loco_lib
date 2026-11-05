@@ -3,7 +3,7 @@
 import gymnasium as gym
 
 gym.register(
-    id="Unitree-G1-AMP-Loco",
+    id="Unitree-G1-AMP",
     entry_point="basic_loco_lib.tasks.amp.amp_env:AmpEnv",
     disable_env_checker=True,
     kwargs={

@@ -1,7 +1,7 @@
 import gymnasium as gym
 
 gym.register(
-    id="Unitree-G1-AMP-Loco-Warp",
+    id="Unitree-G1-AMP-Warp",
     entry_point="basic_loco_lib.tasks.amp.amp_env_warp:AmpEnvWarp",
     disable_env_checker=True,
     kwargs={

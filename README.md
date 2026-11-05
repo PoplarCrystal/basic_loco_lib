@@ -19,8 +19,8 @@ The project uses `rsl_rl` for PPO training and a dedicated world-model learner f
 | Mimic Warp | `Unitree-G1-Mimic-Warp` | Newton | Motion tracking optimized with Warp |
 | Mimic-WM | `Unitree-G1-Mimic-WM` | Newton | Independent motion tracking task trained with learned dynamics and imagined rollouts |
 | Mimic-WM Warp | `Unitree-G1-Mimic-WM-Warp` | Newton | Warp environment with the same world-model learner |
-| AMP | `Unitree-G1-AMP-Loco` | Newton / PhysX | Learn locomotion styles through adversarial motion priors using velocity commands and a motion dataset |
-| AMP Warp | `Unitree-G1-AMP-Loco-Warp` | Newton | AMP locomotion optimized with Warp |
+| AMP | `Unitree-G1-AMP` | Newton / PhysX | Learn locomotion styles through adversarial motion priors using velocity commands and a motion dataset |
+| AMP Warp | `Unitree-G1-AMP-Warp` | Newton | AMP locomotion optimized with Warp |
 
 ## Environment setup
 
@@ -129,13 +129,13 @@ python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-WM-Warp --viz none \
 
 ```bash
 # Newton: standard variant, using WalkandRun and Recovery under data/amp/ by default
-python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Loco --viz none presets=newton
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP --viz none presets=newton
 
 # Newton / Warp: optimized variant
-python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Loco-Warp --viz none
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Warp --viz none
 
 # Select a custom motion dataset directory
-python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Loco --viz none presets=newton \
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP --viz none presets=newton \
     --motion_file /path/to/motion_dir
 ```
 
@@ -166,9 +166,9 @@ python scripts/rsl_rl/play.py --task Unitree-G1-Velocity-Flat-Warp \
     --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
 
 # AMP: playback / export only
-python scripts/rsl_rl/play.py --task Unitree-G1-AMP-Loco presets=newton \
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --viz viser
-python scripts/rsl_rl/play.py --task Unitree-G1-AMP-Loco presets=newton \
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
 ```
 
