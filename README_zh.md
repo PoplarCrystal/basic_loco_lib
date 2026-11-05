@@ -19,8 +19,8 @@
 | Mimic Warp | `Unitree-G1-Mimic-Warp` | Newton | 基于 Warp 优化的动作跟踪任务 |
 | Mimic-WM | `Unitree-G1-Mimic-WM` | Newton | 独立动作跟踪任务，通过世界模型和想象 rollout 训练策略 |
 | Mimic-WM Warp | `Unitree-G1-Mimic-WM-Warp` | Newton | 使用相同 WM 学习器的 Warp 版本 |
-| AMP | `Unitree-G1-AMP-Loco` | Newton / PhysX | 结合速度指令与动作数据集，通过对抗式运动先验学习步态风格 |
-| AMP Warp | `Unitree-G1-AMP-Loco-Warp` | Newton | 基于 Warp 优化的 AMP 任务 |
+| AMP | `Unitree-G1-AMP` | Newton / PhysX | 结合速度指令与动作数据集，通过对抗式运动先验学习步态风格 |
+| AMP Warp | `Unitree-G1-AMP-Warp` | Newton | 基于 Warp 优化的 AMP 任务 |
 
 ## 环境准备
 
@@ -127,13 +127,13 @@ python scripts/rsl_rl/train.py --task Unitree-G1-Mimic-WM-Warp --viz none \
 
 ```bash
 # Newton：标准版，默认使用 data/amp/ 下的 WalkandRun 与 Recovery 数据
-python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Loco --viz none presets=newton
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP --viz none presets=newton
 
 # Newton / Warp：优化版
-python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Loco-Warp --viz none
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Warp --viz none
 
 # 指定自定义动作数据集目录
-python scripts/rsl_rl/train.py --task Unitree-G1-AMP-Loco --viz none presets=newton \
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP --viz none presets=newton \
     --motion_file /path/to/motion_dir
 ```
 
@@ -164,9 +164,9 @@ python scripts/rsl_rl/play.py --task Unitree-G1-Velocity-Flat-Warp \
     --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
 
 # AMP：回放 / 仅导出
-python scripts/rsl_rl/play.py --task Unitree-G1-AMP-Loco presets=newton \
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --viz viser
-python scripts/rsl_rl/play.py --task Unitree-G1-AMP-Loco presets=newton \
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
 ```
 
