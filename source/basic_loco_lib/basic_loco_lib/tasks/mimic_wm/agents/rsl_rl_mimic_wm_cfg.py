@@ -28,7 +28,7 @@ class MimicWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     wm_batches: int = 10
     wm_batch: int = 2048
     pi_batch: int = 4096
-    lr: float = 2.0e-4
+    lr: float = 4.0e-4
     gamma: float = 0.99
     lam: float = 0.95
     critic_epochs: int = 5
