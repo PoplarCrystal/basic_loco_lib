@@ -182,6 +182,7 @@ class MimicWmLearner:
         self._episode_returns = deque(maxlen=100)
         self._episode_lengths = deque(maxlen=100)
         self._episode_scores = deque(maxlen=100)
+        self._episode_metrics: dict[str, list[torch.Tensor]] = {}
         self._wm_rollout_fn = self._compile(self._wm_rollout)
         self._wm_err_fn = self._compile(self._wm_err)
         self._imag_step_fn = self._compile(self._imag_step)
@@ -296,6 +297,17 @@ class MimicWmLearner:
             self.sim_steps += self.env.num_envs
             self.stats["r"].append(transition["r"].mean() / self.mdp.max_step_reward)
             if "ep_len" in transition:
+                # Manager logs describe completed episodes. Only capture them on
+                # reset steps: env.extras may retain the previous reset's log.
+                episode_log = extras.get("episode", extras.get("log", {}))
+                for key, value in episode_log.items():
+                    # This combined reward duplicates the overall reward logs.
+                    if key == "Episode_Reward/tracking":
+                        continue
+                    value = torch.as_tensor(value, device=self.device).detach().float().reshape(-1).clone()
+                    if value.numel():
+                        tag = key if "/" in key else f"Episode/{key}"
+                        self._episode_metrics.setdefault(tag, []).append(value)
                 self._episode_returns.extend(transition["ep_ret"].detach().cpu().tolist())
                 self._episode_lengths.extend(transition["ep_len"].detach().cpu().tolist())
                 self._episode_scores.extend(transition["ep_ret_norm"].detach().cpu().tolist())
@@ -640,6 +652,10 @@ class MimicWmLearner:
                 mean_iteration_time = sum(recent_iteration_times) / len(recent_iteration_times)
                 remaining = (self.cfg.iterations - self.iteration) * mean_iteration_time
                 eta_note = " (warmup rate)" if pi_loss is None else ""
+                episode_metrics = {
+                    tag: torch.cat(values).mean().item()
+                    for tag, values in self._episode_metrics.items()
+                }
                 lines = [
                     f"{' Learning iteration ' + str(self.iteration) + '/' + str(self.cfg.iterations) + ' ':#^80}",
                     f"{'Phase:':>28} {phase}",
@@ -662,6 +678,8 @@ class MimicWmLearner:
                     lines.append(f"{'Mean reward:':>28} {mean_episode_reward:.4f}")
                 if mean_episode_length is not None:
                     lines.append(f"{'Mean episode length:':>28} {mean_episode_length:.2f}")
+                for tag, value in sorted(episode_metrics.items()):
+                    lines.append(f"{tag + ':':>28} {value:.4f}")
                 lines.append(f"{'Total simulation steps:':>28} {self.sim_steps}")
                 lines.append(f"{'Total training time:':>28} {timedelta(seconds=int(self.wall_time))}")
                 lines.append(f"{'ETA:':>28} {timedelta(seconds=int(remaining))}{eta_note}")
@@ -679,6 +697,11 @@ class MimicWmLearner:
                         "train/collect_time": collect_time,
                         "train/learn_time": train_time,
                         "train/iteration_time": iteration_time,
+                        "Loss/learning_rate": learning_rate,
+                        "Loss/world_model": float(wm_loss),
+                        "Perf/total_fps": fps,
+                        "Perf/collection_time": collect_time,
+                        "Perf/learning_time": train_time,
                     }
                     if pi_loss is not None:
                         summary.update(
@@ -688,11 +711,20 @@ class MimicWmLearner:
                                 "train/imag_rew": imag_rew,
                                 "train/pi_gradnorm": pi_gradnorm,
                                 "train/imag_survival": imag_survival,
+                                "Loss/policy": pi_loss,
+                                "Loss/value_function": v_loss,
                             }
                         )
                     for tag, value in summary.items():
                         if value is not None:
                             summary_writer.add_scalar(tag, value, self.iteration)
+                    for tag, value in episode_metrics.items():
+                        summary_writer.add_scalar(tag, value, self.iteration)
+                    if mean_episode_reward is not None:
+                        summary_writer.add_scalar("Train/mean_reward/time", mean_episode_reward, int(self.wall_time))
+                        summary_writer.add_scalar(
+                            "Train/mean_episode_length/time", mean_episode_length, int(self.wall_time)
+                        )
 
                 last_metrics = {
                     "wm_loss": float(wm_loss),
@@ -702,6 +734,7 @@ class MimicWmLearner:
                     "v_loss": v_loss,
                 }
                 self.stats = _empty_stats()
+                self._episode_metrics.clear()
 
                 if (
                     self.iteration % self.cfg.ckpt_every == 0
