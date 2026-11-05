@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from basic_loco_lib import PROJECT_DIR
 from basic_loco_lib.tasks.mimic_wm.mdp_warp.actions import MimicWmJointPositionAction
-from basic_loco_lib.tasks.mimic_wm.mdp_warp.terms import mimic_wm_reward
 from basic_loco_lib.tasks.mimic_wm.mdp_warp.commands import MimicWmCommandWarp
 
 
@@ -267,9 +266,21 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    """Differentiable SuperMimic tracking objective."""
+    """SuperMimic objective split into the terms the world model reproduces.
 
-    tracking = RewTerm(func=mimic_wm_reward, weight=1.0)
+    Every term reads one component of ``diff/mdp.py``'s ``DiffMDP.reward``;
+    the weights mirror its ``RewardCfg`` and ``RewardManager`` applies ``dt``,
+    so the sum equals the imagination reward exactly.
+    """
+
+    motion_global_anchor_pos = RewTerm(func=mdp_warp.wm_motion_global_anchor_pos, weight=0.5)
+    motion_global_anchor_ori = RewTerm(func=mdp_warp.wm_motion_global_anchor_ori, weight=0.5)
+    motion_body_pos = RewTerm(func=mdp_warp.wm_motion_body_pos, weight=1.0)
+    motion_body_ori = RewTerm(func=mdp_warp.wm_motion_body_ori, weight=1.0)
+    motion_body_lin_vel = RewTerm(func=mdp_warp.wm_motion_body_lin_vel, weight=1.0)
+    motion_body_ang_vel = RewTerm(func=mdp_warp.wm_motion_body_ang_vel, weight=1.0)
+    action_rate = RewTerm(func=mdp_warp.wm_action_rate, weight=-0.1)
+    joint_limit = RewTerm(func=mdp_warp.wm_joint_limit, weight=-2.0)
 
 
 @configclass

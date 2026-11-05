@@ -301,9 +301,6 @@ class MimicWmLearner:
                 # reset steps: env.extras may retain the previous reset's log.
                 episode_log = extras.get("episode", extras.get("log", {}))
                 for key, value in episode_log.items():
-                    # This combined reward duplicates the overall reward logs.
-                    if key == "Episode_Reward/tracking":
-                        continue
                     value = torch.as_tensor(value, device=self.device).detach().float().reshape(-1).clone()
                     if value.numel():
                         tag = key if "/" in key else f"Episode/{key}"

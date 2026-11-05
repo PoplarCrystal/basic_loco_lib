@@ -174,30 +174,36 @@ class DiffMDP:
         error_angvel = ((reference_body_w - body_w) ** 2).sum(-1).mean(-1)
         error_root_pos = ((ref_p - position) ** 2).sum(-1)
         error_root_ori = geo.rot_angle_sq(ref_R, rotation)
+        # Unweighted components. The environment registers one reward term per
+        # entry, with the same weights as ``RewardCfg`` below, so their manager
+        # sum reproduces ``reward`` exactly.
+        components = {
+            "motion_body_pos": torch.exp(-error_pos / cfg.body_pos_std**2),
+            "motion_body_ori": torch.exp(-error_ori / cfg.body_ori_std**2),
+            "motion_body_lin_vel": torch.exp(-error_linvel / cfg.body_linvel_std**2),
+            "motion_body_ang_vel": torch.exp(-error_angvel / cfg.body_angvel_std**2),
+            "motion_global_anchor_pos": torch.exp(-error_root_pos / cfg.root_pos_std**2),
+            "motion_global_anchor_ori": torch.exp(-error_root_ori / cfg.root_ori_std**2),
+            "action_rate": ((action - previous_action) ** 2).sum(-1),
+            "joint_limit": (
+                torch.relu(joint_pos - self.soft_hi) + torch.relu(self.soft_lo - joint_pos)
+            ).sum(-1),
+        }
         tracking = (
-            torch.exp(-error_pos / cfg.body_pos_std**2)
-            + torch.exp(-error_ori / cfg.body_ori_std**2)
-            + torch.exp(-error_linvel / cfg.body_linvel_std**2)
-            + torch.exp(-error_angvel / cfg.body_angvel_std**2)
-            + 0.5 * torch.exp(-error_root_pos / cfg.root_pos_std**2)
-            + 0.5 * torch.exp(-error_root_ori / cfg.root_ori_std**2)
+            components["motion_body_pos"]
+            + components["motion_body_ori"]
+            + components["motion_body_lin_vel"]
+            + components["motion_body_ang_vel"]
+            + 0.5 * components["motion_global_anchor_pos"]
+            + 0.5 * components["motion_global_anchor_ori"]
         )
-        action_rate = ((action - previous_action) ** 2).sum(-1)
-        joint_limit = (
-            torch.relu(joint_pos - self.soft_hi) + torch.relu(self.soft_lo - joint_pos)
-        ).sum(-1)
         reward = (
-            tracking + cfg.w_action_rate * action_rate + cfg.w_joint_limit * joint_limit
+            tracking
+            + cfg.w_action_rate * components["action_rate"]
+            + cfg.w_joint_limit * components["joint_limit"]
         ) * self.dt
         if terms:
-            return reward, {
-                "track": tracking * self.dt,
-                "e_body_pos": error_pos,
-                "e_body_ori": error_ori,
-                "e_root_pos": error_root_pos,
-                "action_rate": action_rate,
-                "joint_limit": joint_limit,
-            }
+            return reward, components
         return reward
 
     def termination_errors(self, state, frames, anchor_state=None):
