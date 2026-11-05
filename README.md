@@ -141,6 +141,28 @@ python scripts/rsl_rl/train.py --task Unitree-G1-AMP --viz none presets=newton \
 
 **Note:** The default datasets in `data/amp/WalkandRun/` and `data/amp/Recovery/` are generated for Newton. To use the PhysX backend, regenerate the motion data for PhysX.
 
+### AMP-WM: AMP through a world model
+
+AMP-WM trains the policy inside a differentiable world model's imagination, like
+Mimic-WM, but replaces the analytic tracking reward with the AMP discriminator's
+style reward mixed with differentiable velocity-tracking terms. The discriminator
+is trained on real transitions from the world-model replay buffer against the AMP
+motion dataset, so imagined transitions only drive the policy update. The first
+version disables external pushes and delayed recovery resets. Both the standard
+(PhysX / Newton presets) and Warp environments are available.
+
+```bash
+# Standard environment (default preset: Newton)
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-WM --viz none
+
+# Warp environment
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-WM-Warp --viz none
+
+# Custom motion dataset directory
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-WM-Warp --viz none \
+    --motion_file /path/to/motion_dir
+```
+
 ## 3. Playback and ONNX export
 
 Use `play.py` to load a trained checkpoint. **Keep the task, physics backend, and Mimic reference motion consistent with training.** The examples below use Newton:
@@ -170,6 +192,14 @@ python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --viz viser
 python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
+
+# AMP-WM: playback / export only (uses the world-model checkpoint)
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP-WM \
+    --checkpoint /path/to/last.pt --viz viser
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP-WM-Warp \
+    --checkpoint /path/to/last.pt --viz viser
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP-WM-Warp \
+    --checkpoint /path/to/last.pt --export_only --num_envs 1 --viz none
 ```
 
 - `--viz viser` opens a lightweight 3D viewer; use `--viz none` explicitly for headless runs.
