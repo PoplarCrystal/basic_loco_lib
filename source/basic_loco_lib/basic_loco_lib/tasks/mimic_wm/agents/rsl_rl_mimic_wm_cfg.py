@@ -14,7 +14,7 @@ class MimicWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     ##
     # MimicWmConfig fields (see the learner dataclass for semantics).
 
-    iterations: int = 320_000
+    iterations: int = 30_000
     buffer_steps: int = 1000
     utd: float = 0.4
     horizon: int = 32
@@ -50,7 +50,7 @@ class MimicWmRunnerCfg(RslRlOnPolicyRunnerCfg):
 
     # unused by the WM path: the learner runs its own collect cadence (1/utd)
     num_steps_per_env = 1
-    max_iterations = 320_000
+    max_iterations = 30_000
     save_interval = 500
     experiment_name = ""  # same as task name
     load_checkpoint = "last.pt"
