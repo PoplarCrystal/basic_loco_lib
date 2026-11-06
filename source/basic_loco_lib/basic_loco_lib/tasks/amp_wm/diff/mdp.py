@@ -75,9 +75,7 @@ class RewardCfg:
     # AMP's termination penalty (``is_terminated=-200``), applied to the
     # post-mask termination signal in the learner.
     w_fall: float = -200.0
-    # AMP's delayed-recovery masks: while fallen, velocity / body terms are
-    # scaled by ``delay_rew_ratio`` and height is scaled by
-    # ``delay_height_ratio`` (zero outside the recovery window).
+    # AMP's delayed-recovery reward masks.
     delay_rew_ratio: float = 0.0
     delay_height_ratio: float = 3.5
 
@@ -130,6 +128,9 @@ class AmpDiffMDP:
         terminations = env.cfg.terminations
         self.height_threshold = float(terminations.bad_root_height.params["minimum_height"])
         self.tilt_threshold = float(terminations.bad_orientation.params["limit_angle"])
+        self.max_joint_velocity = float(
+            getattr(env.termination_manager, "_max_joint_velocity", 50.0)
+        )
 
         self.cfg = RewardCfg()
         # The Warp observation manager zero-pads history before the first frames.
@@ -145,6 +146,8 @@ class AmpDiffMDP:
                 torch.zeros(29),  # last action
             )
         ).to(env.device)
+        if not env.cfg.observations.policy.enable_corruption:
+            self.obs_noise.zero_()
 
     # ------------------------------------------------------------------
     # Differentiable kinematics
@@ -285,6 +288,7 @@ class AmpDiffMDP:
         context=None,
         prev_state: State | None = None,
         terms: bool = False,
+        recovery_gate: torch.Tensor | None = None,
     ):
         """Velocity-tracking / regularization reward mirroring the AMP task."""
         if context is None:
@@ -345,18 +349,15 @@ class AmpDiffMDP:
         else:
             joint_acc = torch.zeros_like(joint_limit)
 
-        # AMP's delayed-recovery reward masks. A fallen state is exactly a
-        # delay-window state: no reset has happened, so the policy may get up.
-        fallen = self.is_fallen(state)
-        track_gate = torch.where(fallen, self.cfg.delay_rew_ratio, 1.0)
+        # Membership/counter are supplied by the learner's recovery state
+        # machine. A fallen non-recovery env is not a delayed reward window.
+        if recovery_gate is None:
+            recovery_gate = torch.zeros_like(position[..., 2])
+        track_gate = 1.0 + recovery_gate * (self.cfg.delay_rew_ratio - 1.0)
         lin_reward = lin_reward * track_gate
         ang_reward = ang_reward * track_gate
         body_reward = body_reward * track_gate
-        height_reward = torch.where(
-            fallen,
-            self.cfg.delay_height_ratio * height_reward,
-            torch.zeros_like(height_reward),
-        )
+        height_reward = recovery_gate * self.cfg.delay_height_ratio * height_reward
 
         reward = (
             lin_reward
@@ -403,6 +404,43 @@ class AmpDiffMDP:
             1.0 - torch.sigmoid((tilt - self.tilt_threshold) / 0.04)
         )
         return 1.0 - alive
+
+    @staticmethod
+    def recovery_features(recovery: torch.Tensor) -> torch.Tensor:
+        """Privileged membership and remaining consecutive-fall budget."""
+        enabled, used, limit = recovery.unbind(-1)
+        return torch.stack((enabled, enabled * (1 - used / limit.clamp(min=1))), -1)
+
+    def recovery_step(self, state: State, recovery: torch.Tensor):
+        """Match AMP's hard forward decisions, with smooth surrogate gradients.
+
+        Recovery contains [enabled, consumed steps, maximum steps]. Upright
+        states reset the consecutive-fall counter. During the grace period
+        even a fallen state is alive; there is no soft-done cliff at standing.
+        """
+        enabled, used, limit = recovery.unbind(-1)
+        enabled = enabled > 0.5
+        fallen = self.is_fallen(state)
+        speed = state[5].abs().amax(-1)
+        unstable = enabled & ((speed > self.max_joint_velocity) | ~torch.isfinite(state[5]).all(-1))
+        counter = torch.where(enabled & fallen, used + 1, torch.zeros_like(used))
+        expired = enabled & fallen & (counter >= limit)
+        hard_done = (~enabled & fallen) | expired | unstable
+        # Use the pre-step budget to allow gradients on both sides of a final
+        # permitted recovery step, without changing the actual 0/1 decision.
+        eligible = ~enabled | (used + 1 >= limit)
+        soft_fall = self.soft_termination(state, used)
+        finite_speed = torch.nan_to_num(speed, nan=self.max_joint_velocity + 100,
+                                        posinf=self.max_joint_velocity + 100)
+        soft_unstable = enabled.float() * torch.sigmoid((finite_speed - self.max_joint_velocity) / 1.0)
+        soft_done = 1 - (1 - eligible.float() * soft_fall) * (1 - soft_unstable)
+        done = hard_done.float() + (soft_done - soft_done.detach())
+        delayed = enabled & fallen & ~expired & ~unstable
+        soft_gate = (enabled & ~expired & ~unstable).float() * soft_fall
+        gate = delayed.float() + (soft_gate - soft_gate.detach())
+        counter = torch.where(delayed, counter, torch.zeros_like(counter))
+        next_recovery = torch.stack((enabled.float(), counter, limit), -1)
+        return next_recovery, done, gate
 
     # ------------------------------------------------------------------
     # Protocol plumbing

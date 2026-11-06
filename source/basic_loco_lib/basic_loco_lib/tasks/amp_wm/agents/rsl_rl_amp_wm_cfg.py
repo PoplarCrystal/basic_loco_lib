@@ -44,6 +44,8 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     value_clip_max: float = 1.0
     adaptive_replay: bool = False
     wm_uniform_mix: float = 0.2
+    wm_fallen_fraction: float = 0.25
+    real_value_coef: float = 0.5
     warmup_steps: int = 64
     wm_only_iters: int = 500
     lr_decay_iters: int = 250_000
@@ -57,6 +59,7 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
 
     amp_reward_coef: float = 0.1
     amp_task_reward_lerp: float = 0.75
+    recovery_weight: float = 4.0
     amp_motion_files: str = str(PROJECT_DIR / "data" / "amp")
     amp_discr_hidden_dims: tuple[int, ...] = (1024, 512, 256)
     amp_body_names: tuple[str, ...] = AMP_BODY_NAMES
@@ -81,7 +84,7 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     actor = RslRlMLPModelCfg(
         hidden_dims=[512, 256, 128],
         activation="elu",
-        obs_normalization=False,
+        obs_normalization=True,
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
             init_std=1.0,
             std_type="scalar",
@@ -90,7 +93,7 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     critic = RslRlMLPModelCfg(
         hidden_dims=[512, 256, 128],
         activation="elu",
-        obs_normalization=False,
+        obs_normalization=True,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

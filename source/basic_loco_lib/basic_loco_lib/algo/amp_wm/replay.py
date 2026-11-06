@@ -24,6 +24,11 @@ def _make_fields(
         "f": ((), torch.long),
         "ep_step": ((), torch.int32),
         "done": ((), torch.bool),
+        "term": ((), torch.bool),
+        "a_clean": (num_joints, torch.float32),
+        "xi1": (context_dim, torch.float32),
+        "recovery": (3, torch.float32),
+        "recovery1": (3, torch.float32),
     }
 
 
@@ -79,11 +84,23 @@ class ReplayBuffer:
         B: int,
         k: int,
         weights: torch.Tensor | None = None,
+        fallen_fraction: float = 0.0,
+        fallen_fn=None,
     ) -> dict[str, torch.Tensor]:
         """Sample ``k``-step windows and mask transitions after episode ends."""
         if not 1 <= k <= self.size:
             raise ValueError(f"window length must be in [1, {self.size}], got {k}")
         start, env = self._sample_cells(B, self.size - k + 1, weights)
+        if fallen_fraction > 0:
+            # Inspect only candidate start states, not full candidate windows.
+            # Mix a dedicated fallen quota with ordinary replay, preserving
+            # locomotion coverage. Fall back to ordinary replay if none exist.
+            age_pool, env_pool = self._sample_cells(4 * B, self.size - k + 1, weights)
+            candidates = fallen_fn(self.data["s"][self._row(age_pool), env_pool]).nonzero().flatten()
+            count = int(B * fallen_fraction)
+            if len(candidates) and count:
+                picks = candidates[torch.randint(len(candidates), (count,), device=self.device)]
+                start[:count], env[:count] = age_pool[picks], env_pool[picks]
         ages = start.unsqueeze(-1) + torch.arange(k, device=self.device)
         rows = self._row(ages)
         envs = env.unsqueeze(-1).expand_as(rows)
@@ -119,7 +136,7 @@ class ReplayBuffer:
         back = torch.minimum(back, age.unsqueeze(-1))
         history_rows = self._row(age.unsqueeze(-1) - back)
         history_envs = env.unsqueeze(-1).expand_as(history_rows)
-        start = {key: self.data[key][row, env] for key in ("s", "a_prev", "xi", "f")}
+        start = {key: value[row, env] for key, value in self.data.items()}
         history = {
             key: self.data[key][history_rows, history_envs] for key in ("s", "a_prev", "xi", "f")
         }

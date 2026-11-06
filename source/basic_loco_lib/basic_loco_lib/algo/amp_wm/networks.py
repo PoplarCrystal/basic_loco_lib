@@ -32,7 +32,7 @@ def mlp(
 
 
 class RunningNorm(nn.Module):
-    """Running mean and variance, frozen once ``max_count`` is reached."""
+    """Running moments, then slow EMA adaptation after the initial fit."""
 
     def __init__(self, dim: int, max_count: float = 2e8, eps: float = 1e-2):
         super().__init__()
@@ -49,6 +49,14 @@ class RunningNorm(nn.Module):
     def update(self, x: torch.Tensor) -> None:
         x = x.reshape(-1, x.shape[-1]).float()
         if self.count >= self.max_count:
+            # Keep adapting across resumed recovery/noise curricula without
+            # abruptly resetting the statistics learned by the world model.
+            rate = 1e-3
+            batch_mean = x.mean(0)
+            batch_var = x.var(0, unbiased=False)
+            delta = batch_mean - self.mean
+            self.mean.add_(rate * delta)
+            self.var.copy_((1-rate) * self.var + rate * batch_var + rate * (1-rate) * delta.square())
             return
         batch_count = x.shape[0]
         batch_mean = x.mean(0)
@@ -194,23 +202,60 @@ class Policy(nn.Module):
     def __init__(self, obs_dim: int, num_joints: int = 29, hidden=(512, 256, 128)):
         super().__init__()
         self.net = mlp(obs_dim, hidden, num_joints)
-        self.obs_norm = nn.Identity()
+        self.obs_norm = RunningNorm(obs_dim)
         with torch.no_grad():
             self.net[-1].weight.mul_(0.01)
             self.net[-1].bias.zero_()
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return run_mlp(self.net, obs)
+        return run_mlp(self.net, self.obs_norm(obs))
+
+    @torch.no_grad()
+    def update_normalization(self, obs):
+        _update_input_norm(self.net[0], self.obs_norm, obs)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        _upgrade_identity_norm(state_dict, prefix + "obs_norm.", self.obs_norm)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
 
 class Critic(nn.Module):
     def __init__(self, in_dim: int, hidden: Sequence[int] = (256, 128)):
         super().__init__()
         self.net = mlp(in_dim, hidden, 1)
-        self.norm = nn.Identity()
+        self.norm = RunningNorm(in_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return run_mlp(self.net, self.norm(x)).squeeze(-1)
+
+    @torch.no_grad()
+    def update_normalization(self, obs):
+        _update_input_norm(self.net[0], self.norm, obs)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        _upgrade_identity_norm(state_dict, prefix + "norm.", self.norm)
+        key = prefix + "net.0.weight"
+        if key in state_dict and state_dict[key].shape[1] == self.net[0].in_features - 2:
+            state_dict[key] = torch.nn.functional.pad(state_dict[key], (0, 2))
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
+def _upgrade_identity_norm(state_dict, prefix, normalizer):
+    """Old actor/critic checkpoints had an Identity input normalizer."""
+    if prefix + "mean" not in state_dict:
+        state_dict[prefix + "mean"] = torch.zeros_like(normalizer.mean)
+        state_dict[prefix + "var"] = torch.ones_like(normalizer.var) - normalizer.eps**2
+        state_dict[prefix + "count"] = torch.zeros_like(normalizer.count)
+
+
+@torch.no_grad()
+def _update_input_norm(first_layer, normalizer, obs):
+    """Change coordinates without changing the represented actor/value map."""
+    old_mean, old_std = normalizer.mean.clone(), normalizer.std().clone()
+    normalizer.update(obs)
+    shift = (normalizer.mean - old_mean) / old_std
+    first_layer.bias.add_(first_layer.weight @ shift)
+    first_layer.weight.mul_((normalizer.std() / old_std).unsqueeze(0))
 
 
 __all__ = ["AMP_DTYPE", "Critic", "Policy", "RunningNorm", "WorldModel", "mlp", "run_mlp"]

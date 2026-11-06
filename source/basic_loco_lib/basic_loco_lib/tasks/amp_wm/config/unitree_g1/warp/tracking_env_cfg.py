@@ -258,8 +258,7 @@ class EventCfg:
         params={
             "motion_dir": _MOTION_DIR,
             "recovery_dir": _RECOVERY_DIR,
-            # Delay envs stay fallen, then reset into Recovery clips (AMP's
-            # recovery recipe) so the policy sees get-up states.
+            # Match AMP's delayed-recovery parameters.
             "delay_reset_env_ratio": 0.4,
             "max_delay_steps": 250,
             "max_delay_joint_velocity": 50.0,
@@ -387,7 +386,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
     curriculum = None
 
     # Applied only to the world-model data collection action term.
-    action_noise: float = 0.1
+    action_noise: float = 0.0
 
     def __post_init__(self):
         self.decimation = 4

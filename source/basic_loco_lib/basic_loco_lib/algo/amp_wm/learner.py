@@ -108,6 +108,8 @@ class AmpWmConfig:
     value_clip_max: float = 1.0
     adaptive_replay: bool = False
     wm_uniform_mix: float = 0.2
+    wm_fallen_fraction: float = 0.25
+    real_value_coef: float = 0.5
     warmup_steps: int = 64
     wm_only_iters: int = 500
     lr_decay_iters: int = 250_000
@@ -124,6 +126,8 @@ class AmpWmConfig:
     amp_reward_coef: float = 0.1
     amp_motion_files: str = ""
     amp_task_reward_lerp: float = 0.75
+    # Loss weight for imagination starts flagged as fallen (recovery).
+    recovery_weight: float = 4.0
     amp_discr_hidden_dims: tuple[int, ...] = (1024, 512, 256)
     amp_body_names: tuple[str, ...] = ()
     amp_anchor_name: str = ""
@@ -163,6 +167,8 @@ class AmpWmLearner:
             raise ValueError(f"amp must be 'none' or 'bf16', got {cfg.amp!r}")
         if cfg.utd <= 0:
             raise ValueError("utd must be positive")
+        if not 0 <= cfg.wm_fallen_fraction <= 1 or cfg.real_value_coef < 0:
+            raise ValueError("wm_fallen_fraction must be in [0, 1] and real_value_coef nonnegative")
         if cfg.hist < 1 or cfg.horizon < 1 or cfg.pi_batch < 1:
             raise ValueError("hist, horizon and pi_batch must be positive")
         if cfg.buffer_steps < max(cfg.hist, cfg.wm_window):
@@ -243,6 +249,8 @@ class AmpWmLearner:
         self.stats = _empty_stats()
         self._episode_returns = deque(maxlen=100)
         self._episode_lengths = deque(maxlen=100)
+        self._recovery_episode_lengths = deque(maxlen=100)
+        self._normal_episode_lengths = deque(maxlen=100)
         self._episode_scores = deque(maxlen=100)
         self._episode_metrics: dict[str, list[torch.Tensor]] = {}
         self._wm_rollout_fn = self._compile(self._wm_rollout)
@@ -250,9 +258,17 @@ class AmpWmLearner:
         self._imag_step_fn = self._compile(self._imag_step)
         self._reward_term_fn = self._compile(self._reward_term)
         self._critic_feat_fn = self._compile(self._critic_feat)
+        self._recovery_step_fn = self._compile(self.mdp.recovery_step)
         # First-call flags drive the one-off compile progress bars.
         self._wm_update_compiled = not self.cfg.compile
         self._pi_update_compiled = not self.cfg.compile
+        # Diagnostics for the recovery curriculum.
+        self._recovery_start_frac = 0.0
+        self._fallen_step_frac = 0.0
+        self._imag_rew_recovery = 0.0
+        self._wm_err_recovery = 0.0
+        self._real_value_loss = 0.0
+        self._wm_fallen_fraction = 0.0
 
         self._amp_enabled = amp_enabled
         self._amp_metrics: dict[str, float] = {}
@@ -347,7 +363,13 @@ class AmpWmLearner:
         return info
 
     def _critic_input_dim(self) -> int:
-        return self.mdp.critic_dim * self.cfg.hist
+        return self.mdp.critic_dim * self.cfg.hist + 2
+
+    def _pack_critic(self, history, recovery):
+        return torch.cat((
+            self.mdp.pack_history(history, self.mdp.critic_dims),
+            self.mdp.recovery_features(recovery),
+        ), -1)
 
     def _wm_rollout(
         self, states: torch.Tensor, actions: torch.Tensor, contexts: torch.Tensor
@@ -394,18 +416,19 @@ class AmpWmLearner:
         actions: torch.Tensor,
         previous_actions: torch.Tensor,
         context: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Task/style rewards and soft terminations for a flattened horizon."""
+        recovery_gate: torch.Tensor,
+    ) -> torch.Tensor:
+        """Task/style rewards for a flattened horizon."""
         reward = self.mdp.reward(
             state, frames, actions, previous_actions,
             context=context, prev_state=prev_state,
+            recovery_gate=recovery_gate,
         )
         if self._amp_enabled:
             style_reward = self._amp_style_reward(prev_state, state)
             lerp = self.cfg.amp_task_reward_lerp
             reward = (1.0 - lerp) * style_reward + lerp * reward
-        done = self.mdp.soft_termination(state, frames, prev_state)
-        return reward, done
+        return reward
 
     def _critic_feat(
         self,
@@ -495,6 +518,7 @@ class AmpWmLearner:
             if self._bridged:
                 transition = {key: value.to(self.device) for key, value in transition.items()}
             self.buffer.add(transition)
+            self.pi.update_normalization(obs)
             initial = unflatten_state(transition["s"])
             next_state = unflatten_state(transition["s1"])
             self.wm.in_norm.update(
@@ -518,6 +542,8 @@ class AmpWmLearner:
                         self._episode_metrics.setdefault(tag, []).append(value)
                 self._episode_returns.extend(transition["ep_ret"].detach().cpu().tolist())
                 self._episode_lengths.extend(transition["ep_len"].detach().cpu().tolist())
+                self._recovery_episode_lengths.extend(transition["ep_len_recovery"].detach().cpu().tolist())
+                self._normal_episode_lengths.extend(transition["ep_len_normal"].detach().cpu().tolist())
                 self._episode_scores.extend(transition["ep_ret_norm"].detach().cpu().tolist())
                 self.stats["ep_len"].append(transition["ep_len"].mean())
                 self.stats["ep_ret"].append(transition["ep_ret_norm"].mean())
@@ -537,6 +563,8 @@ class AmpWmLearner:
             self.cfg.wm_batch,
             self.cfg.wm_window,
             weights=self._replay_weights(self.cfg.wm_uniform_mix),
+            fallen_fraction=self.cfg.wm_fallen_fraction,
+            fallen_fn=lambda flat: self.mdp.is_fallen(unflatten_state(flat)),
         )
         predicted = self._wm_rollout_fn(window["s"], window["a"], window["xi"])
         loss, last_error = self._wm_err_fn(predicted, window["s1"], window["mask"])
@@ -546,6 +574,12 @@ class AmpWmLearner:
         self.opt_wm.step()
         mask = window["mask"][:, -1]
         mean_last_error = (last_error.detach() * mask).sum() / mask.sum().clamp(min=1)
+        fallen = self.mdp.is_fallen(unflatten_state(window["s"][:, 0])).float()
+        self._wm_fallen_fraction = float(fallen.mean())
+        recovery_mask = mask * fallen
+        self._wm_err_recovery = float(
+            (last_error.detach() * recovery_mask).sum() / recovery_mask.sum().clamp(min=1)
+        )
         return loss.detach() / self.cfg.wm_window, mean_last_error
 
     def _sample_valid_starts(
@@ -600,6 +634,7 @@ class AmpWmLearner:
         start, history = self._sample_valid_starts(self.cfg.pi_batch)
         state = unflatten_state(start["s"])
         recovery_start = self.mdp.is_fallen(state)
+        recovery = start["recovery"]
         context, frames, previous_action = start["xi"], start["f"], start["a_prev"]
         with torch.no_grad():
             obs_hist = self.mdp.add_noise(self.mdp.obs(
@@ -624,6 +659,7 @@ class AmpWmLearner:
         horizon, batch_size = self.cfg.horizon, self.cfg.pi_batch
         initial_state = state
         states, actions, previous_actions, all_frames = [], [], [], []
+        recoveries, all_dones, recovery_gates = [recovery], [], []
         try:
             # Roll out first; rewards, terminations and critic features are
             # evaluated afterwards on horizon-flattened batches (the per-step
@@ -631,6 +667,10 @@ class AmpWmLearner:
             for _ in range(horizon):
                 previous_actions.append(previous_action)
                 state, action, obs_hist, frames = self._imag_step_fn(state, obs_hist, frames, context)
+                recovery, done, recovery_gate = self._recovery_step_fn(state, recovery)
+                recoveries.append(recovery)
+                all_dones.append(done)
+                recovery_gates.append(recovery_gate)
                 states.append(state)
                 actions.append(action)
                 all_frames.append(frames)
@@ -650,21 +690,13 @@ class AmpWmLearner:
             flat_actions, flat_prev_actions = flatten(actions), flatten(previous_actions)
 
             flat_context = context.unsqueeze(0).expand(horizon, -1, -1).flatten(0, 1)
-            rewards, dones = self._reward_term_fn(
-                all_states, prev_states, flat_frames, flat_actions, flat_prev_actions, flat_context
+            rewards = self._reward_term_fn(
+                all_states, prev_states, flat_frames, flat_actions, flat_prev_actions, flat_context,
+                flatten(recovery_gates),
             )
             rewards = rewards.view(horizon, batch_size)
-            dones = dones.view(horizon, batch_size)
-            if recovery_start.any():
-                # Mirror AMP's delayed termination: a recovery rollout is not
-                # cut off while the robot is still fallen, but normal
-                # termination resumes as soon as it is upright again.
-                fallen_steps = self.mdp.is_fallen(all_states).view(horizon, batch_size)
-                dones = torch.where(
-                    recovery_start.unsqueeze(0) & fallen_steps,
-                    torch.zeros_like(dones),
-                    dones,
-                )
+            dones = torch.stack(all_dones)
+            fallen_steps = self.mdp.is_fallen(all_states).view(horizon, batch_size)
             # AMP's is_terminated=-200: the task reward is mixed at ``lerp``,
             # so apply the same scaling here.
             rewards = rewards + self.cfg.amp_task_reward_lerp * self.mdp.fall_penalty(dones)
@@ -676,6 +708,14 @@ class AmpWmLearner:
             objective = (discount * continuation * rewards).sum(0)
             survival = alive[-1]
             reward_sum = (continuation * rewards).detach().sum(0)
+            self._recovery_start_frac = float(recovery_start.float().mean())
+            self._fallen_step_frac = float(fallen_steps.float().mean())
+            if recovery_start.any():
+                self._imag_rew_recovery = float(
+                    (reward_sum[recovery_start] / self.cfg.horizon / self.mdp.max_step_reward).mean()
+                )
+            else:
+                self._imag_rew_recovery = 0.0
             detached_rewards, detached_dones = rewards.detach(), dones.detach()
 
             # Critic windows: concatenate the replay-history features with the
@@ -689,12 +729,16 @@ class AmpWmLearner:
                 + torch.arange(self.cfg.hist, device=self.device).unsqueeze(0)
             )
             windows = torch.cat((critic_hist.transpose(0, 1), feats), 0)[window_rows]
-            critic_input = self.mdp.pack_history(windows.permute(0, 2, 1, 3), self.mdp.critic_dims)
+            critic_input = self._pack_critic(windows.permute(0, 2, 1, 3), torch.stack(recoveries))
             final_input = critic_input[-1]
             if not self.cfg.no_critic:
                 bootstrap = self.critic(final_input) * self._v_std + self._v_mean
                 objective = objective + (self.cfg.gamma**horizon) * survival * self._clip_values(bootstrap)
-            loss = -objective.mean()
+            # Give fallen starts a larger share of the policy gradient.
+            weights = torch.ones(batch_size, device=self.device)
+            if recovery_start.any():
+                weights[recovery_start] = self.cfg.recovery_weight
+            loss = -(objective * weights).sum() / weights.sum()
             self.opt_pi.zero_grad(set_to_none=True)
             loss.backward()
             grad_norm = nn.utils.clip_grad_norm_(self.pi.parameters(), 1.0)
@@ -725,7 +769,10 @@ class AmpWmLearner:
                     )
                     targets.append(target)
                 targets = self._clip_values(torch.stack(targets[::-1]))
-                mean, std = targets.mean(), targets.std().clamp(min=1e-2)
+                valid_values = continuation.detach()
+                mass = valid_values.sum().clamp(min=1)
+                mean = (targets * valid_values).sum() / mass
+                std = (((targets - mean).square() * valid_values).sum() / mass).sqrt().clamp(min=1e-2)
                 if not self._v_init:
                     self._v_mean, self._v_std = mean, std
                     self._v_init = True
@@ -737,19 +784,69 @@ class AmpWmLearner:
                 targets = ((targets - self._v_mean) / self._v_std).clamp(-20, 20).flatten()
 
             flat_input = critic_input[:-1].detach().reshape(-1, critic_input.shape[-1])
+            critic_weights = torch.ones(horizon, batch_size, device=self.device)
+            if recovery_start.any():
+                critic_weights[:, recovery_start] = self.cfg.recovery_weight
+            # Do not teach values from fictitious transitions after a terminal.
+            critic_weights *= continuation.detach()
+            critic_weights = critic_weights.flatten()
             if self.cfg.critic_minibatches > len(flat_input):
                 raise ValueError("critic_minibatches exceeds imagined transitions")
+            real_input, real_target = self._real_critic_batch() if self.cfg.real_value_coef else (None, None)
+            if real_input is not None and len(real_input):
+                self.critic.update_normalization(real_input)
             for _ in range(self.cfg.critic_epochs):
                 permutation = torch.randperm(len(flat_input), device=self.device)
+                if real_input is not None and len(real_input):
+                    real_indices = iter(torch.randperm(len(real_input), device=self.device).tensor_split(self.cfg.critic_minibatches))
+                else:
+                    real_indices = iter([None] * self.cfg.critic_minibatches)
                 for indices in permutation.tensor_split(self.cfg.critic_minibatches):
-                    value_loss = ((self.critic(flat_input[indices]) - targets[indices]) ** 2).mean()
+                    w = critic_weights[indices]
+                    value_loss = (
+                        ((self.critic(flat_input[indices]) - targets[indices]) ** 2) * w
+                    ).sum() / w.sum().clamp(min=1)
+                    batch_loss = value_loss
+                    real_ids = next(real_indices)
+                    if real_ids is not None and len(real_ids):
+                        real_loss = (self.critic(real_input[real_ids]) - real_target[real_ids]).square().mean()
+                        batch_loss = batch_loss + self.cfg.real_value_coef * real_loss
+                        self._real_value_loss = float(real_loss.detach())
                     self.opt_v.zero_grad(set_to_none=True)
-                    value_loss.backward()
+                    batch_loss.backward()
                     nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
                     self.opt_v.step()
 
         imagined_reward = (reward_sum / self.cfg.horizon / self.mdp.max_step_reward).mean()
         return loss.detach(), value_loss.detach(), imagined_reward, grad_norm.detach(), survival.mean().detach()
+
+    @torch.no_grad()
+    def _real_critic_batch(self):
+        """Actual reward/terminal TD targets to anchor the imagined values."""
+        with torch.no_grad():
+            start, history = self.buffer.sample_starts(self.cfg.pi_batch, self.cfg.hist)
+            features = self.mdp.critic_features(
+                unflatten_state(history["s"]), history["f"], history["xi"], history["a_prev"]
+            )
+            if self.mdp.zero_history:
+                features *= history["valid"][..., None]
+            valid = history["complete"]
+            current = self._pack_critic(features, start["recovery"])[valid]
+            next_features = self.mdp.critic_features(
+                unflatten_state(start["s1"]), start["f"] + 1, start["xi1"], start["a_clean"]
+            )
+            next_history = torch.cat((features[:, 1:], next_features[:, None]), 1)
+            next_input = self._pack_critic(next_history, start["recovery1"])[valid]
+            reward = start["r"][valid]
+            if self._amp_enabled:
+                style = self._amp_style_reward(unflatten_state(start["s"]), unflatten_state(start["s1"]))[valid]
+                reward = self.cfg.amp_task_reward_lerp * reward + (1-self.cfg.amp_task_reward_lerp) * style
+            next_value = self._clip_values(self.critic(next_input) * self._v_std + self._v_mean)
+            # Time-limit truncation bootstraps the captured terminal state;
+            # actual failures (including expired recovery) do not bootstrap.
+            target = reward + self.cfg.gamma * (~start["term"][valid]).float() * next_value
+            target = ((self._clip_values(target) - self._v_mean) / self._v_std).clamp(-20, 20)
+        return current, target
 
     def lr_at(self, iteration: int) -> float:
         if iteration >= self.cfg.lr_decay_iters:
@@ -760,7 +857,7 @@ class AmpWmLearner:
 
     def _checkpoint(self, include_optimizers: bool) -> dict[str, Any]:
         checkpoint = {
-            "format_version": 2,
+            "format_version": 3,
             "v_mean": self._v_mean,
             "v_std": self._v_std,
             "v_init": self._v_init,
@@ -807,7 +904,7 @@ class AmpWmLearner:
 
     def load(self, path: str | Path, load_optimizers: bool = True) -> None:
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
-        if checkpoint.get("format_version") != 2:
+        if checkpoint.get("format_version") not in (2, 3):
             raise ValueError("Unsupported amp-wm checkpoint format; start a new run")
         self._v_mean = checkpoint["v_mean"]
         self._v_std = checkpoint["v_std"]
@@ -826,6 +923,15 @@ class AmpWmLearner:
             self.opt_wm.load_state_dict(checkpoint["opt_wm"])
             self.opt_pi.load_state_dict(checkpoint["opt_pi"])
             self.opt_v.load_state_dict(checkpoint["opt_v"])
+            # The privileged critic gained membership/budget inputs. Preserve
+            # old weights and Adam moments, initializing only new columns.
+            first_weight = self.critic.net[0].weight
+            for key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+                moment = self.opt_v.state.get(first_weight, {}).get(key)
+                if moment is not None and moment.shape != first_weight.shape:
+                    if moment.shape != (first_weight.shape[0], first_weight.shape[1] - 2):
+                        raise ValueError("Unexpected critic optimizer shape in checkpoint")
+                    self.opt_v.state[first_weight][key] = torch.nn.functional.pad(moment, (0, 2))
         sampler_state = checkpoint.get("sampler")
         if sampler_state is not None:
             if self._sampler is None:
@@ -963,6 +1069,9 @@ class AmpWmLearner:
                     f"{'Learning time:':>28} {train_time:.3f}s",
                     f"{'World model loss:':>28} {float(wm_loss):.6f}",
                     f"{'World model rollout error:':>28} {float(wm_error):.6f}",
+                    f"{'World model recovery err:':>28} {self._wm_err_recovery:.6f}",
+                    f"{'WM fallen window fraction:':>28} {self._wm_fallen_fraction:.3f}",
+                    f"{'Real-transition value loss:':>28} {self._real_value_loss:.6f}",
                 ]
                 if amp_metrics:
                     lines.extend([
@@ -977,6 +1086,8 @@ class AmpWmLearner:
                         f"{'Value loss:':>28} {v_loss:.6f}",
                         f"{'Imagined reward (norm):':>28} {imag_rew:.4f}",
                         f"{'Imagined survival:':>28} {imag_survival:.4f}",
+                        f"{'Recovery starts:':>28} {self._recovery_start_frac:.3f}",
+                        f"{'Imagined reward (recovery):':>28} {self._imag_rew_recovery:.4f}",
                     ])
                 if mean_reward is not None:
                     lines.append(f"{'Simulation reward (norm):':>28} {mean_reward:.4f}")
@@ -984,6 +1095,10 @@ class AmpWmLearner:
                     lines.append(f"{'Mean reward:':>28} {mean_episode_reward:.4f}")
                 if mean_episode_length is not None:
                     lines.append(f"{'Mean episode length:':>28} {mean_episode_length:.2f}")
+                for label, lengths in (("Recovery episode length:", self._recovery_episode_lengths),
+                                       ("Normal episode length:", self._normal_episode_lengths)):
+                    if lengths:
+                        lines.append(f"{label:>28} {sum(lengths) / len(lengths):.2f}")
                 for tag, value in sorted(episode_metrics.items()):
                     lines.append(f"{tag + ':':>28} {value:.4f}")
                 lines.append(f"{'Total simulation steps:':>28} {self.sim_steps}")
@@ -995,11 +1110,25 @@ class AmpWmLearner:
                         **amp_metrics,
                         "train/wm_loss": float(wm_loss),
                         "train/wm_err8": float(wm_error),
+                        "train/wm_err8_recovery": self._wm_err_recovery,
+                        "train/wm_fallen_fraction": self._wm_fallen_fraction,
+                        "train/real_value_loss": self._real_value_loss,
                         "train/lr": learning_rate,
                         "train/sim_rew": mean_reward,
                         "Train/mean_reward": mean_episode_reward,
                         "Train/mean_episode_length": mean_episode_length,
+                        "Train/mean_episode_length_recovery": (
+                            sum(self._recovery_episode_lengths) / len(self._recovery_episode_lengths)
+                            if self._recovery_episode_lengths else None
+                        ),
+                        "Train/mean_episode_length_normal": (
+                            sum(self._normal_episode_lengths) / len(self._normal_episode_lengths)
+                            if self._normal_episode_lengths else None
+                        ),
                         "train/ep_ret_norm": mean_episode_score,
+                        "train/recovery_start_frac": self._recovery_start_frac,
+                        "train/fallen_step_frac": self._fallen_step_frac,
+                        "train/imag_rew_recovery": self._imag_rew_recovery,
                         "train/collect_steps": collect_steps,
                         "train/collect_time": collect_time,
                         "train/learn_time": train_time,

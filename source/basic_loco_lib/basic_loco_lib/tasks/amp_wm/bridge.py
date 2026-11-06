@@ -42,6 +42,7 @@ class AmpWmBridge:
         self._root_body_index = list(self.robot.body_names).index("pelvis")
         self._wm_s1 = torch.zeros(self.num_envs, 71, device=self.device)
         self._wm_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._wm_recovery1 = torch.zeros(self.num_envs, 3, device=self.device)
         self._wm_ep_return = torch.zeros(self.num_envs, device=self.device)
         self._wm_ep_age = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.extras[AMP_WM_STATE_KEY] = self._wm_info()
@@ -81,7 +82,18 @@ class AmpWmBridge:
             "xi": context.clone(),
             "a_prev": as_torch(self.action_manager.action).clone(),
             "ep_step": self.episode_length_buf.clone(),
+            "recovery": self._recovery_state(),
         }
+
+    def _recovery_state(self):
+        manager = self.termination_manager
+        if not hasattr(manager, "_delay_env_mask"):
+            return torch.zeros(self.num_envs, 3, device=self.device)
+        enabled = manager._delay_env_mask & (manager._max_delay_steps > 0)
+        return torch.stack((
+            enabled.float(), manager._delay_counters.float(),
+            torch.full_like(manager._delay_counters, manager._max_delay_steps).float(),
+        ), -1).clone()
 
     def _capture_wm_terminal(self, ids=None, mask=None):
         if not self._wm_in_step:
@@ -91,6 +103,7 @@ class AmpWmBridge:
             # A command resample can follow an environment reset in the same step.
             ids = ids[~self._wm_done[ids]]
             self._wm_s1[ids] = flatten_state(self._wm_state())[ids]
+            self._wm_recovery1[ids] = self._recovery_state()[ids]
             self._wm_done[ids] = True
 
     def step(self, action):
@@ -108,6 +121,7 @@ class AmpWmBridge:
         s1 = torch.where(done[:, None], self._wm_s1, flatten_state(self._wm_state()))
         reward = as_torch(self.reward_buf).clone()
         episode_done = as_torch(result[2]) | as_torch(result[3])
+        post = self._wm_info()
         self._wm_ep_return += reward
         self._wm_ep_age += 1
         transition = {
@@ -116,10 +130,16 @@ class AmpWmBridge:
             "a": (action + noise).clone(),
             "r": reward,
             "done": done,
-            "term": done & as_torch(self.reset_terminated),
+            "term": as_torch(result[2]).clone(),
+            "a_clean": action.clone(),
+            "xi1": torch.where(done[:, None], pre["xi"], post["xi"]),
+            "recovery1": torch.where(done[:, None], self._wm_recovery1, post["recovery"]),
         }
         if episode_done.any():
             transition["ep_len"] = self._wm_ep_age[episode_done].float().clone()
+            recovery_env = pre["recovery"][:, 0] > 0.5
+            transition["ep_len_recovery"] = self._wm_ep_age[episode_done & recovery_env].float().clone()
+            transition["ep_len_normal"] = self._wm_ep_age[episode_done & ~recovery_env].float().clone()
             transition["ep_ret"] = self._wm_ep_return[episode_done].clone()
             transition["ep_ret_norm"] = (
                 self._wm_ep_return[episode_done]
@@ -129,7 +149,7 @@ class AmpWmBridge:
         self._wm_ep_age[episode_done] = 0
         self._wm_ep_return[episode_done] = 0
         self.extras[AMP_WM_TRANSITION_KEY] = transition
-        self.extras[AMP_WM_STATE_KEY] = self._wm_info()
+        self.extras[AMP_WM_STATE_KEY] = post
         return result
 
     def reset(self, *args, **kwargs):
