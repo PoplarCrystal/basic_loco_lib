@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -39,6 +41,44 @@ from .motion_loader import AMPLoader
 from .networks import Critic, Policy, WorldModel, mlp, run_mlp
 from .normalizer import Normalizer
 from .replay import ReplayBuffer
+
+
+def _run_with_compile_bar(label: str, estimate_s: int, fn, *args, **kwargs):
+    """Run ``fn`` once while rendering a time-estimated compile progress bar.
+
+    ``torch.compile`` blocks on the first call, so a daemon thread draws the
+    bar while the main thread compiles. The bar is only an estimate; it jumps
+    to 100% when the call returns.
+    """
+    width = 30
+    start = time.perf_counter()
+    done = threading.Event()
+
+    def render() -> None:
+        while not done.wait(1.0):
+            elapsed = time.perf_counter() - start
+            frac = min(elapsed / estimate_s, 0.99)
+            filled = int(round(frac * width))
+            eta = max(estimate_s - int(elapsed), 0)
+            sys.stdout.write(
+                f"\r{label} |{'█' * filled}{'░' * (width - filled)}| "
+                f"{int(round(frac * 100)):3d}% {int(elapsed):5d}s  ETA {eta}s  "
+            )
+            sys.stdout.flush()
+
+    thread = threading.Thread(target=render, daemon=True)
+    thread.start()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        done.set()
+        thread.join()
+        elapsed = time.perf_counter() - start
+        sys.stdout.write(
+            f"\r{label} |{'█' * width}| 100% {int(elapsed):5d}s  "
+            f"done, total {int(elapsed)}s  \n"
+        )
+        sys.stdout.flush()
 
 
 @dataclass
@@ -210,6 +250,9 @@ class AmpWmLearner:
         self._imag_step_fn = self._compile(self._imag_step)
         self._reward_term_fn = self._compile(self._reward_term)
         self._critic_feat_fn = self._compile(self._critic_feat)
+        # First-call flags drive the one-off compile progress bars.
+        self._wm_update_compiled = not self.cfg.compile
+        self._pi_update_compiled = not self.cfg.compile
 
         self._amp_enabled = amp_enabled
         self._amp_metrics: dict[str, float] = {}
@@ -482,6 +525,14 @@ class AmpWmLearner:
                 self.stats["done"].append(transition["done"].float().sum())
 
     def wm_update(self) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self._wm_update_compiled:
+            self._wm_update_compiled = True
+            return _run_with_compile_bar(
+                "[amp-wm]: compiling world model", 90, self._wm_update
+            )
+        return self._wm_update()
+
+    def _wm_update(self) -> tuple[torch.Tensor, torch.Tensor]:
         window = self.buffer.sample_windows(
             self.cfg.wm_batch,
             self.cfg.wm_window,
@@ -538,6 +589,14 @@ class AmpWmLearner:
             return weights.to(self.device).reshape(self.buffer.size, self.buffer.N)
 
     def policy_update(self):
+        if not self._pi_update_compiled:
+            self._pi_update_compiled = True
+            return _run_with_compile_bar(
+                "[amp-wm]: compiling policy update", 180, self._policy_update
+            )
+        return self._policy_update()
+
+    def _policy_update(self):
         start, history = self._sample_valid_starts(self.cfg.pi_batch)
         state = unflatten_state(start["s"])
         recovery_start = self.mdp.is_fallen(state)
@@ -823,10 +882,6 @@ class AmpWmLearner:
             last_phase = None
             last_metrics: dict[str, float | int | None] = {}
             for iteration in range(start_iteration, self.cfg.iterations):
-                if self.cfg.compile and iteration == start_iteration:
-                    print("[amp-wm]: compiling world model (one-off, slow on first run)")
-                if self.cfg.compile and iteration == self.cfg.wm_only_iters:
-                    print("[amp-wm]: compiling policy update (one-off, slow on first run)")
                 if torch.device(self.device).type == "cuda":
                     torch.cuda.synchronize(self.device)
                 iteration_start = time.time()
