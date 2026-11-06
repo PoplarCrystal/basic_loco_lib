@@ -33,7 +33,7 @@ from .replay import ReplayBuffer
 
 @dataclass
 class MimicWmConfig:
-    iterations: int = 320_000
+    iterations: int = 30_000
     buffer_steps: int = 1000
     utd: float = 0.4
     horizon: int = 32
