@@ -6,8 +6,7 @@ actor/critic observations, reward terms), with three task-level changes:
 
 * observation groups are named ``policy`` / ``critic`` for the WM learner;
 * the action term applies world-model execution noise;
-* external pushes are disabled (the first version trains on the policy's own
-  rollout distribution, like mimic-wm).
+* delayed recovery resets use the AMP task's events (no external pushes).
 
 The policy is *not* trained by this reward config: the WM learner recomputes a
 differentiable version of these terms in imagination (see ``diff/mdp.py``).
@@ -218,21 +217,22 @@ class ObservationsCfg:
 
 _MOTION_BASE = PROJECT_DIR / "data" / "amp"
 _MOTION_DIR = str(_MOTION_BASE / "WalkandRun")
+_RECOVERY_DIR = str(_MOTION_BASE / "Recovery")
 
 
 @configclass
 class EventCfg:
-    """Startup/reset events; external pushes are disabled for WM training."""
+    """Startup/reset events; delayed recovery mirrors the AMP task."""
 
     init_motion_loader = EventTerm(
         func=amp_events.init_motion_loader,
         mode="startup",
         params={
             "motion_dir": _MOTION_DIR,
-            "recovery_dir": None,
-            # No delayed recovery resets: the first version trains a single
-            # velocity-tracking policy without push perturbations.
-            "delay_reset_env_ratio": 0.0,
+            "recovery_dir": _RECOVERY_DIR,
+            # Delay envs stay fallen, then reset into Recovery clips (AMP's
+            # recovery recipe) so the policy sees get-up states.
+            "delay_reset_env_ratio": 0.4,
             "max_delay_steps": 250,
             "max_delay_joint_velocity": 50.0,
         },
@@ -260,7 +260,7 @@ class RewardsCfg:
         params={
             "command_name": "twist",
             "std": 1.0,
-            "mask_delay": False,
+            "mask_delay": True,
             "delay_env_rew_ratio": 0.0,
             "anchor_cfg": SceneEntityCfg("robot", body_names=_ANCHOR_NAME),
         },
@@ -271,7 +271,7 @@ class RewardsCfg:
         params={
             "command_name": "twist",
             "std": 3.14,
-            "mask_delay": False,
+            "mask_delay": True,
             "delay_env_rew_ratio": 0.0,
             "anchor_cfg": SceneEntityCfg("robot", body_names=_ANCHOR_NAME),
         },
@@ -279,14 +279,16 @@ class RewardsCfg:
     track_root_height = RewTerm(
         func=amp_rewards.track_root_height,
         weight=1.0,
-        params={"std": 0.3, "mask_delay": False, "delay_env_rew_ratio": 0.0},
+        # AMP's delay semantics: height is a recovery-only reward (3.5x while
+        # the robot is fallen, zero otherwise).
+        params={"std": 0.3, "mask_delay": True, "delay_env_rew_ratio": 3.5},
     )
     body_ang_vel_xy = RewTerm(
         func=amp_rewards.body_ang_vel_xy_l2,
         weight=0.5,
         params={
             "std": 3.14,
-            "mask_delay": False,
+            "mask_delay": True,
             "delay_env_rew_ratio": 0.0,
             "body_cfg": SceneEntityCfg("robot", body_names="pelvis"),
         },

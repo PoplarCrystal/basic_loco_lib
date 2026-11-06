@@ -540,6 +540,7 @@ class AmpWmLearner:
     def policy_update(self):
         start, history = self._sample_valid_starts(self.cfg.pi_batch)
         state = unflatten_state(start["s"])
+        recovery_start = self.mdp.is_fallen(state)
         context, frames, previous_action = start["xi"], start["f"], start["a_prev"]
         with torch.no_grad():
             obs_hist = self.mdp.add_noise(self.mdp.obs(
@@ -595,6 +596,16 @@ class AmpWmLearner:
             )
             rewards = rewards.view(horizon, batch_size)
             dones = dones.view(horizon, batch_size)
+            if recovery_start.any():
+                # Mirror AMP's delayed termination: a recovery rollout is not
+                # cut off while the robot is still fallen, but normal
+                # termination resumes as soon as it is upright again.
+                fallen_steps = self.mdp.is_fallen(all_states).view(horizon, batch_size)
+                dones = torch.where(
+                    recovery_start.unsqueeze(0) & fallen_steps,
+                    torch.zeros_like(dones),
+                    dones,
+                )
             alive = torch.cumprod(1 - dones, 0)
             continuation = torch.cat((torch.ones(1, batch_size, device=self.device), alive[:-1]), 0)
             discount = self.cfg.gamma ** torch.arange(

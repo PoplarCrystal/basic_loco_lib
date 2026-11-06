@@ -65,12 +65,17 @@ class RewardCfg:
     body_ang_vel_std: float = 3.14
     w_body_ang_vel_xy: float = 0.5
     w_action_rate: float = -0.01
-    # ~20x the real-env ``joint_acc_l2`` weight (-2.5e-7): the WM uses the
+    # 40x the real-env ``joint_acc_l2`` weight (-2.5e-7): the WM uses the
     # control-step average acceleration (50 Hz), whose squared magnitude is
     # measured at ~7x (noiseless) to ~34x (with execution noise) smaller than
     # the sim's 200 Hz instantaneous acceleration.
     w_joint_acc: float = -1e-5
     w_joint_limit: float = -2.0
+    # AMP's delayed-recovery masks: while fallen, velocity / body terms are
+    # scaled by ``delay_rew_ratio`` and height is scaled by
+    # ``delay_height_ratio`` (zero outside the recovery window).
+    delay_rew_ratio: float = 0.0
+    delay_height_ratio: float = 3.5
 
 
 def as_torch(value):
@@ -336,6 +341,19 @@ class AmpDiffMDP:
         else:
             joint_acc = torch.zeros_like(joint_limit)
 
+        # AMP's delayed-recovery reward masks. A fallen state is exactly a
+        # delay-window state: no reset has happened, so the policy may get up.
+        fallen = self.is_fallen(state)
+        track_gate = torch.where(fallen, self.cfg.delay_rew_ratio, 1.0)
+        lin_reward = lin_reward * track_gate
+        ang_reward = ang_reward * track_gate
+        body_reward = body_reward * track_gate
+        height_reward = torch.where(
+            fallen,
+            self.cfg.delay_height_ratio * height_reward,
+            torch.zeros_like(height_reward),
+        )
+
         reward = (
             lin_reward
             + ang_reward
@@ -356,6 +374,13 @@ class AmpDiffMDP:
                 "joint_limit": joint_limit,
             }
         return reward
+
+    def is_fallen(self, state: State) -> torch.Tensor:
+        """Hard fall predicate used to flag recovery imagination starts."""
+        position, rotation = state[0], state[1]
+        cosine = rotation[..., 2, 2].clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+        tilt = torch.acos(cosine)
+        return (position[..., 2] < self.height_threshold) | (tilt > self.tilt_threshold)
 
     def soft_termination(self, state: State, frames, anchor_state=None) -> torch.Tensor:
         position, rotation = state[0], state[1]
