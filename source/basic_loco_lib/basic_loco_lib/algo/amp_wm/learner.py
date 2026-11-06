@@ -208,6 +208,8 @@ class AmpWmLearner:
         self._wm_rollout_fn = self._compile(self._wm_rollout)
         self._wm_err_fn = self._compile(self._wm_err)
         self._imag_step_fn = self._compile(self._imag_step)
+        self._reward_term_fn = self._compile(self._reward_term)
+        self._critic_feat_fn = self._compile(self._critic_feat)
 
         self._amp_enabled = amp_enabled
         self._amp_metrics: dict[str, float] = {}
@@ -340,6 +342,34 @@ class AmpWmLearner:
         obs = self.mdp.add_noise(self.mdp.obs(next_state, action, context, next_frames))
         history = torch.cat((obs_hist[:, 1:], obs.unsqueeze(1)), 1)
         return next_state, action, history, next_frames
+
+    def _reward_term(
+        self,
+        state: State,
+        prev_state: State,
+        frames: torch.Tensor,
+        actions: torch.Tensor,
+        previous_actions: torch.Tensor,
+        context: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Task/style rewards and soft terminations for a flattened horizon."""
+        reward = self.mdp.reward(state, frames, actions, previous_actions, context=context)
+        if self._amp_enabled:
+            style_reward = self._amp_style_reward(prev_state, state)
+            lerp = self.cfg.amp_task_reward_lerp
+            reward = (1.0 - lerp) * style_reward + lerp * reward
+        done = self.mdp.soft_termination(state, frames, prev_state)
+        return reward, done
+
+    def _critic_feat(
+        self,
+        state: State,
+        frames: torch.Tensor,
+        context: torch.Tensor,
+        previous_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Critic features for a horizon-flattened batch."""
+        return self.mdp.critic_features(state, frames, context, previous_actions)
 
     def _clip_values(self, values: torch.Tensor) -> torch.Tensor:
         """Bound value bootstraps / targets; NaN passes through so divergence stays visible."""
@@ -528,39 +558,66 @@ class AmpWmLearner:
         _set_requires_grad(self.critic, False)
         if self._amp_enabled:
             _set_requires_grad(self.discriminator, False)
-        critic_inputs, rewards, dones = [], [], []
-        objective = torch.zeros(self.cfg.pi_batch, device=self.device)
-        survival = torch.ones_like(objective)
-        reward_sum = torch.zeros_like(objective)
+        horizon, batch_size = self.cfg.horizon, self.cfg.pi_batch
+        initial_state = state
+        states, actions, previous_actions, all_frames = [], [], [], []
         try:
-            for index in range(self.cfg.horizon):
-                critic_inputs.append(self.mdp.pack_history(critic_hist.detach(), self.mdp.critic_dims))
-                old_state = state
+            # Roll out first; rewards, terminations and critic features are
+            # evaluated afterwards on horizon-flattened batches (the per-step
+            # eager loop they used to live in was the dominant cost).
+            for _ in range(horizon):
+                previous_actions.append(previous_action)
                 state, action, obs_hist, frames = self._imag_step_fn(state, obs_hist, frames, context)
-                task_reward = self.mdp.reward(
-                    state, frames, action, previous_action, context=context
-                )
-                if self._amp_enabled:
-                    style_reward = self._amp_style_reward(old_state, state)
-                    lerp = self.cfg.amp_task_reward_lerp
-                    reward = (1.0 - lerp) * style_reward + lerp * task_reward
-                else:
-                    reward = task_reward
-                done = self.mdp.soft_termination(state, frames, old_state)
-                objective = objective + (self.cfg.gamma**index) * survival * reward
-                reward_sum = reward_sum + survival.detach() * reward.detach()
-                rewards.append(reward.detach())
-                dones.append(done.detach())
-                survival = survival * (1 - done)
+                states.append(state)
+                actions.append(action)
+                all_frames.append(frames)
                 previous_action = action
-                critic_obs = self.mdp.critic_features(state, frames, context, action)
-                critic_hist = torch.cat((critic_hist[:, 1:], critic_obs.unsqueeze(1)), 1)
 
-            final_input = self.mdp.pack_history(critic_hist, self.mdp.critic_dims)
-            critic_inputs.append(final_input.detach())
+            def flatten(parts: list[torch.Tensor]) -> torch.Tensor:
+                return torch.stack(parts).flatten(0, 1)
+
+            all_states: State = tuple(
+                flatten([item[index] for item in states]) for index in range(6)
+            )
+            prev_states: State = tuple(
+                flatten([initial_state[index]] + [item[index] for item in states[:-1]])
+                for index in range(6)
+            )
+            flat_frames = flatten(all_frames)
+            flat_actions, flat_prev_actions = flatten(actions), flatten(previous_actions)
+
+            flat_context = context.unsqueeze(0).expand(horizon, -1, -1).flatten(0, 1)
+            rewards, dones = self._reward_term_fn(
+                all_states, prev_states, flat_frames, flat_actions, flat_prev_actions, flat_context
+            )
+            rewards = rewards.view(horizon, batch_size)
+            dones = dones.view(horizon, batch_size)
+            alive = torch.cumprod(1 - dones, 0)
+            continuation = torch.cat((torch.ones(1, batch_size, device=self.device), alive[:-1]), 0)
+            discount = self.cfg.gamma ** torch.arange(
+                horizon, device=self.device, dtype=torch.float32
+            ).unsqueeze(-1)
+            objective = (discount * continuation * rewards).sum(0)
+            survival = alive[-1]
+            reward_sum = (continuation * rewards).detach().sum(0)
+            detached_rewards, detached_dones = rewards.detach(), dones.detach()
+
+            # Critic windows: concatenate the replay-history features with the
+            # imagined ones, then gather all horizon+1 windows in one shot.
+            # Features of s[t+1] carry a[t], the action that produced that state.
+            feats = self._critic_feat_fn(
+                all_states, flat_frames, flat_context, flat_actions
+            ).view(horizon, batch_size, -1)
+            window_rows = (
+                torch.arange(horizon + 1, device=self.device).unsqueeze(1)
+                + torch.arange(self.cfg.hist, device=self.device).unsqueeze(0)
+            )
+            windows = torch.cat((critic_hist.transpose(0, 1), feats), 0)[window_rows]
+            critic_input = self.mdp.pack_history(windows.permute(0, 2, 1, 3), self.mdp.critic_dims)
+            final_input = critic_input[-1]
             if not self.cfg.no_critic:
                 bootstrap = self.critic(final_input) * self._v_std + self._v_mean
-                objective = objective + (self.cfg.gamma**self.cfg.horizon) * survival * self._clip_values(bootstrap)
+                objective = objective + (self.cfg.gamma**horizon) * survival * self._clip_values(bootstrap)
             loss = -objective.mean()
             self.opt_pi.zero_grad(set_to_none=True)
             loss.backward()
@@ -576,12 +633,18 @@ class AmpWmLearner:
 
         value_loss = torch.zeros((), device=self.device)
         if not self.cfg.no_critic:
+            # One batched critic forward over all horizon+1 windows; the
+            # recursion below then only chains small per-step scalars.
             with torch.no_grad():
-                values = [self.critic(x) * self._v_std + self._v_mean for x in critic_inputs]
+                values = (
+                    self.critic(critic_input.detach().flatten(0, 1)).view(horizon + 1, batch_size)
+                    * self._v_std
+                    + self._v_mean
+                )
                 target = values[-1]
                 targets = []
-                for index in range(self.cfg.horizon - 1, -1, -1):
-                    target = rewards[index] + self.cfg.gamma * (1 - dones[index]) * (
+                for index in range(horizon - 1, -1, -1):
+                    target = detached_rewards[index] + self.cfg.gamma * (1 - detached_dones[index]) * (
                         (1 - self.cfg.lam) * values[index + 1] + self.cfg.lam * target
                     )
                     targets.append(target)
@@ -597,7 +660,7 @@ class AmpWmLearner:
                     ).sqrt().clamp(min=1e-2)
                 targets = ((targets - self._v_mean) / self._v_std).clamp(-20, 20).flatten()
 
-            flat_input = torch.cat(critic_inputs[:-1], 0)
+            flat_input = critic_input[:-1].detach().reshape(-1, critic_input.shape[-1])
             if self.cfg.critic_minibatches > len(flat_input):
                 raise ValueError("critic_minibatches exceeds imagined transitions")
             for _ in range(self.cfg.critic_epochs):
