@@ -65,12 +65,16 @@ class RewardCfg:
     body_ang_vel_std: float = 3.14
     w_body_ang_vel_xy: float = 0.5
     w_action_rate: float = -0.01
-    # 40x the real-env ``joint_acc_l2`` weight (-2.5e-7): the WM uses the
+    # ~8x the real-env ``joint_acc_l2`` weight (-2.5e-7): the WM uses the
     # control-step average acceleration (50 Hz), whose squared magnitude is
-    # measured at ~7x (noiseless) to ~34x (with execution noise) smaller than
-    # the sim's 200 Hz instantaneous acceleration.
-    w_joint_acc: float = -1e-5
-    w_joint_limit: float = -2.0
+    # measured at ~7x (noiseless) smaller than the sim's 200 Hz instantaneous
+    # acceleration (up to ~34x with execution noise; the noiseless ratio keeps
+    # the imagination penalty aligned with AMP's intended scale).
+    w_joint_acc: float = -2e-6
+    w_joint_limit: float = -10.0
+    # AMP's termination penalty (``is_terminated=-200``), applied to the
+    # post-mask termination signal in the learner.
+    w_fall: float = -200.0
     # AMP's delayed-recovery masks: while fallen, velocity / body terms are
     # scaled by ``delay_rew_ratio`` and height is scaled by
     # ``delay_height_ratio`` (zero outside the recovery window).
@@ -381,6 +385,14 @@ class AmpDiffMDP:
         cosine = rotation[..., 2, 2].clamp(-1.0 + 1e-6, 1.0 - 1e-6)
         tilt = torch.acos(cosine)
         return (position[..., 2] < self.height_threshold) | (tilt > self.tilt_threshold)
+
+    def fall_penalty(self, dones: torch.Tensor) -> torch.Tensor:
+        """Differentiable counterpart of AMP's ``is_terminated`` penalty.
+
+        ``dones`` must be the post-recovery-mask termination signal, so delay
+        windows (still-fallen recovery starts) are not penalized.
+        """
+        return self.cfg.w_fall * self.dt * dones
 
     def soft_termination(self, state: State, frames, anchor_state=None) -> torch.Tensor:
         position, rotation = state[0], state[1]

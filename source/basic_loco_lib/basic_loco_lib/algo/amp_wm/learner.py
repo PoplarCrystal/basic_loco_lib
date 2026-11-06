@@ -665,6 +665,9 @@ class AmpWmLearner:
                     torch.zeros_like(dones),
                     dones,
                 )
+            # AMP's is_terminated=-200: the task reward is mixed at ``lerp``,
+            # so apply the same scaling here.
+            rewards = rewards + self.cfg.amp_task_reward_lerp * self.mdp.fall_penalty(dones)
             alive = torch.cumprod(1 - dones, 0)
             continuation = torch.cat((torch.ones(1, batch_size, device=self.device), alive[:-1]), 0)
             discount = self.cfg.gamma ** torch.arange(

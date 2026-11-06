@@ -295,14 +295,12 @@ class RewardsCfg:
     )
     # The world model reproduces these terms: ``joint_acc`` uses the sim's
     # instantaneous acceleration here and the WM state's joint_vel finite
-    # difference in ``diff/mdp.py``. The 50 Hz control-step average is much
-    # smaller than the 200 Hz instantaneous acceleration, so the imagination
-    # weight is higher (see ``RewardCfg.w_joint_acc``). ``is_terminated`` still
-    # has no differentiable counterpart (termination is modelled by
-    # ``soft_termination``).
+    # difference in ``diff/mdp.py``; ``is_terminated`` is mirrored by the
+    # learner's ``AmpDiffMDP.fall_penalty``.
     joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    joint_limit = RewTerm(func=mdp.joint_pos_limits, weight=-2.0)
+    joint_limit = RewTerm(func=mdp.joint_pos_limits, weight=-10.0)
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    is_terminated = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
 
 ##
