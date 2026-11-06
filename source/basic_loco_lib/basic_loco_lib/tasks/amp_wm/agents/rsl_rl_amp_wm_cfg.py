@@ -23,7 +23,7 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     ##
     # World-model learner settings (mirrors mimic-wm's learner defaults).
 
-    iterations: int = 320_000
+    iterations: int = 100_001
     buffer_steps: int = 1000
     utd: float = 0.4
     horizon: int = 32
@@ -72,7 +72,7 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     # rsl-rl runner interface (placeholders; the learner owns the networks).
 
     num_steps_per_env = 1
-    max_iterations = 320_000
+    max_iterations = 100_001
     save_interval = 500
     experiment_name = "g1_amp_wm"
     load_checkpoint = "last.pt"
