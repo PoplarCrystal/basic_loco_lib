@@ -353,7 +353,10 @@ class AmpWmLearner:
         context: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Task/style rewards and soft terminations for a flattened horizon."""
-        reward = self.mdp.reward(state, frames, actions, previous_actions, context=context)
+        reward = self.mdp.reward(
+            state, frames, actions, previous_actions,
+            context=context, prev_state=prev_state,
+        )
         if self._amp_enabled:
             style_reward = self._amp_style_reward(prev_state, state)
             lerp = self.cfg.amp_task_reward_lerp

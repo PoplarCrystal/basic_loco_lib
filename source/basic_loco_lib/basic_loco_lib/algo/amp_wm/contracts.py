@@ -52,9 +52,14 @@ class AmpWmMdpProtocol(Protocol):
         frames: torch.Tensor,
         action: torch.Tensor,
         previous_action: torch.Tensor,
+        context: torch.Tensor | None = None,
+        prev_state: State | None = None,
+        terms: bool = False,
     ) -> torch.Tensor: ...
 
-    def soft_termination(self, state: State, frames: torch.Tensor) -> torch.Tensor: ...
+    def soft_termination(
+        self, state: State, frames: torch.Tensor, anchor_state: State | None = None
+    ) -> torch.Tensor: ...
 
     def critic_features(
         self,

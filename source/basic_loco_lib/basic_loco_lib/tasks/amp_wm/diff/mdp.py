@@ -65,7 +65,12 @@ class RewardCfg:
     body_ang_vel_std: float = 3.14
     w_body_ang_vel_xy: float = 0.5
     w_action_rate: float = -0.01
-    w_joint_limit: float = -10.0
+    # ~20x the real-env ``joint_acc_l2`` weight (-2.5e-7): the WM uses the
+    # control-step average acceleration (50 Hz), whose squared magnitude is
+    # measured at ~7x (noiseless) to ~34x (with execution noise) smaller than
+    # the sim's 200 Hz instantaneous acceleration.
+    w_joint_acc: float = -1e-5
+    w_joint_limit: float = -2.0
 
 
 def as_torch(value):
@@ -269,6 +274,7 @@ class AmpDiffMDP:
         action,
         previous_action,
         context=None,
+        prev_state: State | None = None,
         terms: bool = False,
     ):
         """Velocity-tracking / regularization reward mirroring the AMP task."""
@@ -323,6 +329,12 @@ class AmpDiffMDP:
         joint_limit = (
             torch.relu(joint_pos - self.soft_hi) + torch.relu(self.soft_lo - joint_pos)
         ).sum(-1)
+        # Control-step average joint acceleration: joint_vel is part of the WM
+        # state, so the gradient flows through the frozen WM to the action.
+        if prev_state is not None:
+            joint_acc = ((state[5] - prev_state[5]) / self.dt).square().sum(-1)
+        else:
+            joint_acc = torch.zeros_like(joint_limit)
 
         reward = (
             lin_reward
@@ -330,6 +342,7 @@ class AmpDiffMDP:
             + height_reward
             + self.cfg.w_body_ang_vel_xy * body_reward
             + self.cfg.w_action_rate * action_rate
+            + self.cfg.w_joint_acc * joint_acc
             + self.cfg.w_joint_limit * joint_limit
         ) * self.dt
         if terms:
@@ -339,6 +352,7 @@ class AmpDiffMDP:
                 "track_height": height_reward,
                 "body_ang_vel_xy": body_reward,
                 "action_rate": action_rate,
+                "joint_acc": joint_acc,
                 "joint_limit": joint_limit,
             }
         return reward

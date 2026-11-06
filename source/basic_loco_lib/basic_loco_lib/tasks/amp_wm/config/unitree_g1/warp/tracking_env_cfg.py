@@ -320,11 +320,15 @@ class RewardsCfg:
             "body_cfg": SceneEntityCfg("robot", body_names="pelvis"),
         },
     )
-    # Only terms the world model reproduces: ``joint_acc`` and the
-    # ``is_terminated`` penalty have no differentiable counterpart in
-    # ``diff/mdp.py`` (termination is modelled by ``soft_termination``), so
-    # the environment reward must not include them either.
-    joint_limit = RewTerm(func=warp_mdp.joint_pos_limits, weight=-10.0)
+    # The world model reproduces these terms: ``joint_acc`` uses the sim's
+    # instantaneous acceleration here and the WM state's joint_vel finite
+    # difference in ``diff/mdp.py``. The 50 Hz control-step average is much
+    # smaller than the 200 Hz instantaneous acceleration, so the imagination
+    # weight is higher (see ``RewardCfg.w_joint_acc``). ``is_terminated`` still
+    # has no differentiable counterpart (termination is modelled by
+    # ``soft_termination``).
+    joint_acc = RewTerm(func=warp_mdp.joint_acc_l2, weight=-2.5e-7)
+    joint_limit = RewTerm(func=warp_mdp.joint_pos_limits, weight=-2.0)
     action_rate = RewTerm(func=warp_mdp.action_rate_l2, weight=-0.01)
 
 
