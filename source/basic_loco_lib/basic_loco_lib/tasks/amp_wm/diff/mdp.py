@@ -64,7 +64,10 @@ class RewardCfg:
     height_std: float = 0.3
     body_ang_vel_std: float = 3.14
     w_body_ang_vel_xy: float = 0.5
-    w_action_rate: float = -0.01
+    # 10x the real-env weight (-0.01): penalty scales are trainer-relative, and
+    # the imagined gradient on action smoothness is far weaker than PPO's
+    # on-policy one. The real env keeps -0.01 for AMP log parity.
+    w_action_rate: float = -0.1
     # ~8x the real-env ``joint_acc_l2`` weight (-2.5e-7): the WM uses the
     # control-step average acceleration (50 Hz), whose squared magnitude is
     # measured at ~7x (noiseless) smaller than the sim's 200 Hz instantaneous
