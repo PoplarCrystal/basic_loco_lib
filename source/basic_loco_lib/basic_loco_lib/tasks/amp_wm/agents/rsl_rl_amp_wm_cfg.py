@@ -59,7 +59,7 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
 
     amp_reward_coef: float = 0.1
     amp_task_reward_lerp: float = 0.75
-    recovery_weight: float = 4.0
+    recovery_weight: float = 1.0
     amp_motion_files: str = str(PROJECT_DIR / "data" / "amp")
     amp_discr_hidden_dims: tuple[int, ...] = (1024, 512, 256)
     amp_body_names: tuple[str, ...] = AMP_BODY_NAMES

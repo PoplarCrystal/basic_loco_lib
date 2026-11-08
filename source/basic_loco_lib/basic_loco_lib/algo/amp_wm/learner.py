@@ -127,7 +127,9 @@ class AmpWmConfig:
     amp_motion_files: str = ""
     amp_task_reward_lerp: float = 0.75
     # Loss weight for imagination starts flagged as fallen (recovery).
-    recovery_weight: float = 4.0
+    # 1.0 = natural sampling frequency (AMP-like). Higher values concentrate
+    # imagination on fallen states and grow the folded get-up attractor.
+    recovery_weight: float = 1.0
     amp_discr_hidden_dims: tuple[int, ...] = (1024, 512, 256)
     amp_body_names: tuple[str, ...] = ()
     amp_anchor_name: str = ""
