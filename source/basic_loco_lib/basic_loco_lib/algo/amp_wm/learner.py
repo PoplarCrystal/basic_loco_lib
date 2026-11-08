@@ -1071,9 +1071,6 @@ class AmpWmLearner:
                     f"{'Learning time:':>28} {train_time:.3f}s",
                     f"{'World model loss:':>28} {float(wm_loss):.6f}",
                     f"{'World model rollout error:':>28} {float(wm_error):.6f}",
-                    f"{'World model recovery err:':>28} {self._wm_err_recovery:.6f}",
-                    f"{'WM fallen window fraction:':>28} {self._wm_fallen_fraction:.3f}",
-                    f"{'Real-transition value loss:':>28} {self._real_value_loss:.6f}",
                 ]
                 if amp_metrics:
                     lines.extend([
@@ -1088,8 +1085,6 @@ class AmpWmLearner:
                         f"{'Value loss:':>28} {v_loss:.6f}",
                         f"{'Imagined reward (norm):':>28} {imag_rew:.4f}",
                         f"{'Imagined survival:':>28} {imag_survival:.4f}",
-                        f"{'Recovery starts:':>28} {self._recovery_start_frac:.3f}",
-                        f"{'Imagined reward (recovery):':>28} {self._imag_rew_recovery:.4f}",
                     ])
                 if mean_reward is not None:
                     lines.append(f"{'Simulation reward (norm):':>28} {mean_reward:.4f}")
@@ -1097,10 +1092,6 @@ class AmpWmLearner:
                     lines.append(f"{'Mean reward:':>28} {mean_episode_reward:.4f}")
                 if mean_episode_length is not None:
                     lines.append(f"{'Mean episode length:':>28} {mean_episode_length:.2f}")
-                for label, lengths in (("Recovery episode length:", self._recovery_episode_lengths),
-                                       ("Normal episode length:", self._normal_episode_lengths)):
-                    if lengths:
-                        lines.append(f"{label:>28} {sum(lengths) / len(lengths):.2f}")
                 for tag, value in sorted(episode_metrics.items()):
                     lines.append(f"{tag + ':':>28} {value:.4f}")
                 lines.append(f"{'Total simulation steps:':>28} {self.sim_steps}")
