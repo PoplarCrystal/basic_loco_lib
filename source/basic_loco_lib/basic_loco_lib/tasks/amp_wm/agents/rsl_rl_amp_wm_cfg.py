@@ -79,7 +79,9 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 500
     experiment_name = "g1_amp_wm"
     load_checkpoint = "last.pt"
-    seed = 0
+    # Seed 1 = the validated -8.5e-6 draw (get-up 24/24, best zero-cmd
+    # behavior of the two verified seeds).
+    seed = 1
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
     actor = RslRlMLPModelCfg(
         hidden_dims=[512, 256, 128],
