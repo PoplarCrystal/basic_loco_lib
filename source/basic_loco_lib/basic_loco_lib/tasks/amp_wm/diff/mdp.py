@@ -67,13 +67,13 @@ class RewardCfg:
     # 10x the real-env weight (-0.01): penalty scales are trainer-relative, and
     # the imagined gradient on action smoothness is far weaker than PPO's
     # on-policy one. The real env keeps -0.01 for AMP log parity.
-    w_action_rate: float = -0.1
+    w_action_rate: float = -0.01
     # ~8x the real-env ``joint_acc_l2`` weight (-2.5e-7): the WM uses the
     # control-step average acceleration (50 Hz), whose squared magnitude is
     # measured at ~7x (noiseless) smaller than the sim's 200 Hz instantaneous
     # acceleration (up to ~34x with execution noise; the noiseless ratio keeps
     # the imagination penalty aligned with AMP's intended scale).
-    w_joint_acc: float = -2e-6
+    w_joint_acc: float = -8.5e-6
     w_joint_limit: float = -10.0
     # AMP's termination penalty (``is_terminated=-200``), applied to the
     # post-mask termination signal in the learner.
@@ -348,7 +348,11 @@ class AmpDiffMDP:
         # Control-step average joint acceleration: joint_vel is part of the WM
         # state, so the gradient flows through the frozen WM to the action.
         if prev_state is not None:
-            joint_acc = ((state[5] - prev_state[5]) / self.dt).square().sum(-1)
+            # Clamp to the physical range before squaring: solver-overflow
+            # transients produce absurd accelerations whose squared gradients
+            # blow the policy update up (observed NaN at w_joint_acc=-1e-5).
+            accel = ((state[5] - prev_state[5]) / self.dt).clamp(-150.0, 150.0)
+            joint_acc = accel.square().sum(-1)
         else:
             joint_acc = torch.zeros_like(joint_limit)
 

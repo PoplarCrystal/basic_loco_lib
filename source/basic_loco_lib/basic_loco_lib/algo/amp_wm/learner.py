@@ -519,6 +519,18 @@ class AmpWmLearner:
             transition = extras[AMP_WM_TRANSITION_KEY]
             if self._bridged:
                 transition = {key: value.to(self.device) for key, value in transition.items()}
+            # Physics-solver overflows can emit non-finite states; one such
+            # transition poisons the world model and the run never recovers.
+            finite = (
+                torch.isfinite(transition["s"]).all(-1)
+                & torch.isfinite(transition["s1"]).all(-1)
+            )
+            if not bool(finite.all()):
+                self.stats.setdefault("nonfinite", []).append(int((~finite).sum()))
+                transition = {
+                    key: value[finite] if value.shape[:1] == finite.shape else value
+                    for key, value in transition.items()
+                }
             self.buffer.add(transition)
             self.pi.update_normalization(obs)
             initial = unflatten_state(transition["s"])
