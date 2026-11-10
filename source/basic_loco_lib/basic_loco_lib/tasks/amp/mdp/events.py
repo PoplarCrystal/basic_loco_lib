@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import torch
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+from isaaclab.envs.mdp.events import _randomize_prop_by_op
 from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
+    from isaaclab.assets import Articulation
     from isaaclab.envs import ManagerBasedRLEnv
 
 from .terminations import DelayedTerminationManager
@@ -193,11 +195,14 @@ def init_motion_loader(
         delay_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         delay_indices = torch.randperm(env.num_envs, device=env.device)[:num_delay]
         delay_mask[delay_indices] = True
+        joint_vel = env.scene["robot"].data.joint_vel
+        if hasattr(joint_vel, "torch"):
+            joint_vel = joint_vel.torch
         env.termination_manager = termination_manager_cls(
             base=env.termination_manager,
             delay_env_mask=delay_mask,
             max_delay_steps=max_delay_steps,
-            joint_vel=env.scene["robot"].data.joint_vel.torch,
+            joint_vel=joint_vel,
             max_joint_velocity=max_delay_joint_velocity,
         )
         print(
@@ -220,3 +225,53 @@ def reset_from_motion_data(
         motion_dir=motion_dir,
         asset_cfg=asset_cfg,
     )
+
+
+def _as_torch(value):
+    """Torch view of a data buffer (torch tensor or IsaacLab proxy)."""
+    return getattr(value, "torch", value)
+
+
+def randomize_joint_default_pos(
+    env: ManagerBasedRLEnv,
+    env_ids: torch.Tensor | slice | None,
+    asset_cfg: SceneEntityCfg,
+    pos_distribution_params: tuple[float, float] | None = None,
+    operation: Literal["add", "scale", "abs"] = "abs",
+    distribution: Literal["uniform", "log_uniform", "gaussian"] = "uniform",
+):
+    """Randomize per-env joint zero offsets (encoder calibration errors).
+
+    The default joint position is the reference for ``joint_pos_rel`` and the
+    action offset, so this shifts both consistently.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # Save the nominal value for export.
+    asset.data.default_joint_pos_nominal = _as_torch(asset.data.default_joint_pos)[0].clone()
+
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=asset.device)
+    elif isinstance(env_ids, slice):
+        env_ids = torch.arange(env.scene.num_envs, device=asset.device)[env_ids]
+
+    if isinstance(asset_cfg.joint_ids, slice):
+        joint_ids = slice(None)
+    else:
+        joint_ids = torch.tensor(asset_cfg.joint_ids, dtype=torch.int, device=asset.device)
+
+    if pos_distribution_params is not None:
+        default_pos = _as_torch(asset.data.default_joint_pos)
+        pos = _randomize_prop_by_op(
+            default_pos.clone(),
+            pos_distribution_params,
+            env_ids,
+            joint_ids,
+            operation=operation,
+            distribution=distribution,
+        )[env_ids][:, joint_ids]
+
+        selected_envs = env_ids if isinstance(joint_ids, slice) else env_ids[:, None]
+        default_pos[selected_envs, joint_ids] = pos
+        # The action offset is a per-env buffer; keep it in sync.
+        env.action_manager.get_term("JointPositionAction")._offset[selected_envs, joint_ids] = pos
