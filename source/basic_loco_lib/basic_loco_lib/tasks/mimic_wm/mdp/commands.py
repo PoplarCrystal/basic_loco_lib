@@ -4,7 +4,6 @@ import math
 import numpy as np
 import os
 import torch
-import warp as wp
 from collections.abc import Sequence
 from dataclasses import MISSING
 from typing import TYPE_CHECKING
@@ -26,6 +25,11 @@ from isaaclab.utils.math import (
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def _as_torch(value):
+    """Torch view of a data buffer (torch tensor or IsaacLab proxy)."""
+    return getattr(value, "torch", value)
 
 
 class MotionLoader:
@@ -144,49 +148,49 @@ class MotionCommand(CommandTerm):
 
     @property
     def robot_joint_pos(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.joint_pos)
+        return _as_torch(self.robot.data.joint_pos)
 
     @property
     def robot_joint_vel(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.joint_vel)
+        return _as_torch(self.robot.data.joint_vel)
 
     @property
     def robot_body_pos_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_pos_w)[:, self.body_indexes]
+        return _as_torch(self.robot.data.body_pos_w)[:, self.body_indexes]
 
     @property
     def robot_body_quat_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_quat_w)[:, self.body_indexes]
+        return _as_torch(self.robot.data.body_quat_w)[:, self.body_indexes]
 
     @property
     def robot_body_lin_vel_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_lin_vel_w)[:, self.body_indexes]
+        return _as_torch(self.robot.data.body_lin_vel_w)[:, self.body_indexes]
 
     @property
     def robot_body_ang_vel_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_ang_vel_w)[:, self.body_indexes]
+        return _as_torch(self.robot.data.body_ang_vel_w)[:, self.body_indexes]
 
     @property
     def robot_anchor_pos_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_pos_w)[:, self.robot_anchor_body_index]
+        return _as_torch(self.robot.data.body_pos_w)[:, self.robot_anchor_body_index]
 
     @property
     def robot_anchor_quat_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_quat_w)[:, self.robot_anchor_body_index]
+        return _as_torch(self.robot.data.body_quat_w)[:, self.robot_anchor_body_index]
 
     @property
     def robot_anchor_lin_vel_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_lin_vel_w)[:, self.robot_anchor_body_index]
+        return _as_torch(self.robot.data.body_lin_vel_w)[:, self.robot_anchor_body_index]
 
     @property
     def robot_anchor_ang_vel_w(self) -> torch.Tensor:
-        return wp.to_torch(self.robot.data.body_ang_vel_w)[:, self.robot_anchor_body_index]
+        return _as_torch(self.robot.data.body_ang_vel_w)[:, self.robot_anchor_body_index]
 
     @property
     def robot_anchor_vel_w(self) -> torch.Tensor:
         return torch.cat([
-            wp.to_torch(self.robot.data.body_lin_vel_w)[:, self.robot_anchor_body_index],
-            wp.to_torch(self.robot.data.body_ang_vel_w)[:, self.robot_anchor_body_index],
+            _as_torch(self.robot.data.body_lin_vel_w)[:, self.robot_anchor_body_index],
+            _as_torch(self.robot.data.body_ang_vel_w)[:, self.robot_anchor_body_index],
         ], dim=-1)
 
     def _update_metrics(self):
@@ -277,7 +281,7 @@ class MotionCommand(CommandTerm):
         joint_vel = self.joint_vel.clone()
 
         joint_pos += sample_uniform(*self.cfg.joint_position_range, joint_pos.shape, joint_pos.device)
-        soft_joint_pos_limits = wp.to_torch(self.robot.data.soft_joint_pos_limits)[env_ids]
+        soft_joint_pos_limits = _as_torch(self.robot.data.soft_joint_pos_limits)[env_ids]
         joint_pos[env_ids] = torch.clip(
             joint_pos[env_ids], soft_joint_pos_limits[:, :, 0], soft_joint_pos_limits[:, :, 1]
         )

@@ -1,7 +1,6 @@
 """Capture WM transitions before the task's managers reset the simulator."""
 
 import torch
-import warp as wp
 
 from basic_loco_lib.algo.mimic_wm.contracts import MIMIC_WM_STATE_KEY, MIMIC_WM_TRANSITION_KEY
 from basic_loco_lib.algo.mimic_wm.geometry import flatten_state, quat_to_mat
@@ -10,7 +9,15 @@ from .diff.mdp import DiffMDP
 
 
 def as_torch(value):
-    return value if torch.is_tensor(value) else wp.to_torch(value)
+    """Torch view of a data buffer (torch tensor, IsaacLab proxy, or Warp array)."""
+    if torch.is_tensor(value):
+        return value
+    torch_view = getattr(value, "torch", None)
+    if torch_view is not None:
+        return torch_view
+    import warp as wp
+
+    return wp.to_torch(value)
 
 
 def resolve_ids(env, ids=None, mask=None):

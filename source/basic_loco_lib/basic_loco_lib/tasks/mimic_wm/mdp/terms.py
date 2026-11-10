@@ -2,42 +2,13 @@
 
 The environment reward must equal the reward the world-model learner optimises
 in imagination, so these terms read the components of
-:meth:`basic_loco_lib.tasks.mimic_wm.diff.mdp.DiffMDP.reward` instead of
-re-implementing the tracking formula. ``RewardManager`` applies each term's
-weight and ``dt``; the config weights mirror ``RewardCfg`` in
-``diff/mdp.py``, so their weighted sum reproduces the training reward exactly.
-
-All terms of one control step share a single ``DiffMDP.reward`` evaluation
-through a small cache: ``RewardManager`` calls every active term back to back.
+:func:`basic_loco_lib.tasks.mimic_wm.diff.mdp._reward_terms`, which is shared
+with the Warp task, instead of re-implementing the tracking formula.
+``RewardManager`` applies each term's weight and ``dt``; the config weights
+mirror ``RewardCfg`` in ``diff/mdp.py``, so their weighted sum reproduces the
+training reward exactly.
 """
-import torch
-import warp as wp
-
-
-def as_torch(value):
-    return value if torch.is_tensor(value) else wp.to_torch(value)
-
-
-def _reward_terms(env):
-    """Evaluate the differentiable reward components once per control step."""
-    mdp = env.mimic_wm_mdp
-    step = env.common_step_counter
-    cached = getattr(env, "_mimic_wm_reward_terms", None)
-    if cached is not None and cached[0] == step:
-        return cached[1]
-    command = env.command_manager.get_term('motion')
-    # The WM transition ends on the next reference frame (DiffMDP rewards the
-    # post-step state with ``frames + 1``), unlike the mimic task reward terms.
-    frames = (command.time_steps + 1).clamp(max=mdp.motion.num_frames - 1)
-    _, terms = mdp.reward(
-        env._wm_state(),
-        frames,
-        as_torch(env.action_manager.action),
-        as_torch(env.action_manager.prev_action),
-        terms=True,
-    )
-    env._mimic_wm_reward_terms = (step, terms)
-    return terms
+from ..diff.mdp import _reward_terms
 
 
 def wm_motion_global_anchor_pos(env):

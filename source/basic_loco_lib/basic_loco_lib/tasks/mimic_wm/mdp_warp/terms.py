@@ -1,7 +1,7 @@
 """Warp output-buffer adapters for the differentiable SuperMimic reward terms."""
 import warp as wp
 from isaaclab_experimental.utils.warp import warp_capturable
-from ..mdp.terms import _reward_terms
+from ..diff.mdp import _reward_terms
 
 
 def _copy(env, out, name):

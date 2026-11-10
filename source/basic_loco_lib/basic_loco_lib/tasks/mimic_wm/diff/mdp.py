@@ -13,6 +13,19 @@ from basic_loco_lib.algo.mimic_wm import geometry as geo
 from basic_loco_lib.algo.mimic_wm.contracts import State
 from .kinematics import G1Kinematics
 
+
+def as_torch(value):
+    """Torch view of a data buffer (torch tensor, IsaacLab proxy, or Warp array)."""
+    if torch.is_tensor(value):
+        return value
+    torch_view = getattr(value, "torch", None)
+    if torch_view is not None:
+        return torch_view
+    import warp as wp
+
+    return wp.to_torch(value)
+
+
 NUM_J = 29
 OBS_DIM = 154
 XI_DIM = 58  # Actual default joint position/velocity; WM-only conditioning.
@@ -70,9 +83,9 @@ class DiffMDP:
         self.zero_history = "Warp" in type(env).__name__
         self.dt = env.step_dt
         self.default_q = torch.zeros(NUM_J, device=env.device)
-        import warp as wp
-        self.soft_lo = wp.to_torch(robot.data.soft_joint_pos_limits)[0, :, 0].clone()
-        self.soft_hi = wp.to_torch(robot.data.soft_joint_pos_limits)[0, :, 1].clone()
+        soft_joint_pos_limits = as_torch(robot.data.soft_joint_pos_limits)
+        self.soft_lo = soft_joint_pos_limits[0, :, 0].clone()
+        self.soft_hi = soft_joint_pos_limits[0, :, 1].clone()
         self.cfg = RewardCfg()
         self.terminations = copy.deepcopy(env.cfg.terminations)
         self.ee_ids = [command.cfg.body_names.index(n) for n in self.terminations.ee_body_pos.params['body_names']]
@@ -233,3 +246,31 @@ class DiffMDP:
 
     def valid_imagination_start(self,frames,horizon):
         return frames+horizon<self.motion.num_frames
+
+
+def _reward_terms(env):
+    """Evaluate the differentiable reward components once per control step.
+
+    Env-facing adapter around :meth:`DiffMDP.reward`, shared by the standard
+    and Warp reward terms so both backends optimise the same objective. All
+    terms of one control step share a single evaluation through a per-env
+    cache, because ``RewardManager`` calls every active term back to back.
+    """
+    mdp = env.mimic_wm_mdp
+    step = env.common_step_counter
+    cached = getattr(env, "_mimic_wm_reward_terms", None)
+    if cached is not None and cached[0] == step:
+        return cached[1]
+    command = env.command_manager.get_term('motion')
+    # The WM transition ends on the next reference frame (DiffMDP rewards the
+    # post-step state with ``frames + 1``), unlike the mimic task reward terms.
+    frames = (command.time_steps + 1).clamp(max=mdp.motion.num_frames - 1)
+    _, terms = mdp.reward(
+        env._wm_state(),
+        frames,
+        as_torch(env.action_manager.action),
+        as_torch(env.action_manager.prev_action),
+        terms=True,
+    )
+    env._mimic_wm_reward_terms = (step, terms)
+    return terms
