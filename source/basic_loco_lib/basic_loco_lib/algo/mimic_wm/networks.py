@@ -92,10 +92,12 @@ class WorldModel(nn.Module):
         hidden: Sequence[int] = (2048, 2048, 2048),
         num_joints: int = 29,
         context_dim: int = 33,
+        statistics_mode: str = "fixed",
     ):
         super().__init__()
         self.num_joints = num_joints
         self.context_dim = context_dim
+        self.statistics_mode = statistics_mode
         self.in_dim = 13 + 3 * num_joints + context_dim
         self.out_dim = 12 + 2 * num_joints
         self.net = mlp(self.in_dim, hidden, self.out_dim, act=nn.SiLU, layer_norm=True)
@@ -103,8 +105,20 @@ class WorldModel(nn.Module):
         assert isinstance(output, nn.Linear)
         nn.init.zeros_(output.weight)
         nn.init.zeros_(output.bias)
-        self.in_norm = RunningNorm(self.in_dim)
-        self.out_norm = RunningNorm(self.out_dim, eps=1e-4)
+        floor = torch.tensor(
+            [3e-3] * 3 + [5e-3] * 3 + [2e-2] * 3 + [5e-2] * 3
+            + [3e-3] * num_joints + [5e-2] * num_joints
+        )
+        self.register_buffer("error_floor", floor)
+        if statistics_mode == "fixed":
+            self.register_buffer("input_mean", torch.zeros(self.in_dim))
+            self.register_buffer("input_std", torch.ones(self.in_dim))
+            self.register_buffer("delta_mean", torch.zeros(self.out_dim))
+            self.register_buffer("delta_std", torch.ones(self.out_dim))
+            self.register_buffer("stats_fitted", torch.tensor(False))
+        else:
+            self.in_norm = RunningNorm(self.in_dim)
+            self.out_norm = RunningNorm(self.out_dim, eps=1e-4)
 
     def inputs(
         self, state: State, action: torch.Tensor, normalized_context: torch.Tensor
@@ -139,11 +153,13 @@ class WorldModel(nn.Module):
         normalized_context: torch.Tensor,
     ) -> State:
         position, rotation, lin_vel, ang_vel, joint_pos, joint_vel = state
-        prediction = run_mlp(
-            self.net,
-            self.in_norm(self.inputs(state, action, normalized_context)),
-        )
-        increment = prediction * self.out_norm.std() + self.out_norm.mean
+        inputs = self.inputs(state, action, normalized_context)
+        if self.statistics_mode == "fixed":
+            prediction = run_mlp(self.net, (inputs - self.input_mean) / self.input_std)
+            increment = prediction * self.delta_std + self.delta_mean
+        else:
+            prediction = run_mlp(self.net, self.in_norm(inputs))
+            increment = prediction * self.out_norm.std() + self.out_norm.mean
         heading = yaw_mat(rotation)
         d_position, d_rotation, d_lin_vel, d_ang_vel, d_joint_pos, d_joint_vel = increment.split(
             (3, 3, 3, 3, self.num_joints, self.num_joints), -1
@@ -160,6 +176,28 @@ class WorldModel(nn.Module):
             joint_pos + d_joint_pos,
             joint_vel + d_joint_vel,
         )
+
+    def error_scale(self) -> torch.Tensor:
+        std = self.delta_std if self.statistics_mode == "fixed" else self.out_norm.std()
+        return torch.maximum(std, self.error_floor)
+
+    @torch.no_grad()
+    def fit_stats(self, state, next_state, action, normalized_context) -> None:
+        if self.statistics_mode != "fixed":
+            return
+        x = self.inputs(state, action, normalized_context).reshape(-1, self.in_dim)
+        y = self.targets(state, next_state).reshape(-1, self.out_dim)
+        self.input_mean.copy_(x.mean(0))
+        self.input_std.copy_(x.std(0, unbiased=False).clamp_min(0.01))
+        self.delta_mean.copy_(y.mean(0))
+        self.delta_std.copy_(torch.maximum(y.std(0, unbiased=False), self.error_floor))
+        self.stats_fitted.fill_(True)
+
+    def update_stats(self, state, action, next_state, normalized_context) -> None:
+        if self.statistics_mode != "running":
+            return
+        self.in_norm.update(self.inputs(state, action, normalized_context))
+        self.out_norm.update(self.targets(state, next_state))
 
     @staticmethod
     def state_error(predicted_state: State, state: State) -> torch.Tensor:

@@ -27,6 +27,7 @@ class MimicWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     wm_window: int = 8
     wm_batches: int = 10
     wm_batch: int = 2048
+    wm_statistics: str = "fixed"
     pi_batch: int = 4096
     lr: float = 2.0e-4
     gamma: float = 0.99

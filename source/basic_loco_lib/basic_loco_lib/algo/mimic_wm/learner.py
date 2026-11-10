@@ -84,6 +84,7 @@ class MimicWmConfig:
     wm_window: int = 8
     wm_batches: int = 10
     wm_batch: int = 2048
+    wm_statistics: str = "fixed"
     pi_batch: int = 4096
     lr: float = 2e-4
     gamma: float = 0.99
@@ -138,6 +139,8 @@ class MimicWmLearner:
         """
         if cfg.amp not in ("none", "bf16"):
             raise ValueError(f"amp must be 'none' or 'bf16', got {cfg.amp!r}")
+        if cfg.wm_statistics not in ("fixed", "running"):
+            raise ValueError(f"wm_statistics must be 'fixed' or 'running', got {cfg.wm_statistics!r}")
         if cfg.utd <= 0:
             raise ValueError("utd must be positive")
         if cfg.hist < 1 or cfg.horizon < 1 or cfg.pi_batch < 1:
@@ -204,17 +207,6 @@ class MimicWmLearner:
             num_joints=self.mdp.num_joints,
             context_dim=self.mdp.context_dim,
         )
-        self.err_floor = torch.cat(
-            (
-                torch.full((3,), 3e-3),
-                torch.full((3,), 5e-3),
-                torch.full((3,), 2e-2),
-                torch.full((3,), 5e-2),
-                torch.full((self.mdp.num_joints,), 3e-3),
-                torch.full((self.mdp.num_joints,), 5e-2),
-            )
-        ).to(self.device)
-
         self.iteration = 0
         self.sim_steps = 0
         self.wall_time = 0.0
@@ -248,6 +240,7 @@ class MimicWmLearner:
         kwargs = {
             "num_joints": self.mdp.num_joints,
             "context_dim": self.mdp.context_dim,
+            "statistics_mode": self.cfg.wm_statistics,
         }
         if self.cfg.test_hidden_dims is not None:
             return WorldModel(hidden=self.cfg.test_hidden_dims, **kwargs)
@@ -292,7 +285,7 @@ class MimicWmLearner:
     def _wm_err(
         self, predicted: State, next_states: torch.Tensor, mask: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        std = torch.maximum(self.wm.out_norm.std(), self.err_floor)
+        std = self.wm.error_scale()
         error = (self.wm.state_error(predicted, unflatten_state(next_states)) / std) ** 2
         error = error.mean(-1)
         return (error * mask).sum() / next_states.shape[0], error[:, -1]
@@ -354,14 +347,12 @@ class MimicWmLearner:
             self.buffer.add(transition)
             initial = unflatten_state(transition["s"])
             next_state = unflatten_state(transition["s1"])
-            self.wm.in_norm.update(
-                self.wm.inputs(
-                    initial,
-                    transition["a"],
-                    self.mdp.normalize_context(transition["xi"]),
-                )
+            self.wm.update_stats(
+                initial,
+                transition["a"],
+                next_state,
+                self.mdp.normalize_context(transition["xi"]),
             )
-            self.wm.out_norm.update(self.wm.targets(initial, next_state))
             self.sim_steps += self.env.num_envs
             self.stats["r"].append(transition["r"].mean() / self.mdp.max_step_reward)
             if "ep_len" in transition:
@@ -690,6 +681,16 @@ class MimicWmLearner:
             required_steps = max(required_steps, self.cfg.warmup_steps)
         if self.buffer.size < required_steps:
             self.collect(required_steps - self.buffer.size)
+        if self.wm.statistics_mode == "fixed" and not bool(self.wm.stats_fitted):
+            window = self.buffer.sample_windows(
+                min(8192, self.buffer.size * self.buffer.N), 1
+            )
+            self.wm.fit_stats(
+                unflatten_state(window["s"][:, 0]),
+                unflatten_state(window["s1"][:, 0]),
+                window["a"][:, 0],
+                self.mdp.normalize_context(window["xi"][:, 0]),
+            )
         print(f"[mimic-wm]: replay buffer filled to {self.buffer.size}/{self.cfg.buffer_steps}")
 
         summary_writer = None
