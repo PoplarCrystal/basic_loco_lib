@@ -62,7 +62,7 @@ class RslRlAmpRunnerCfg(RslRlOnPolicyRunnerCfg):
     min_normalized_std: list = (0.05,) * 29
     amp_body_names: tuple = ()
     amp_anchor_name: str = ""
-    amp_replay_buffer_size: int = 1000000
+    amp_replay_buffer_size: int = 100000
     check_for_nan: bool = False
     detailed_nan_check: bool = False
 

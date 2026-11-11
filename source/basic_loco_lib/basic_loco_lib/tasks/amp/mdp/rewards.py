@@ -121,32 +121,32 @@ def _as_torch(value):
     return getattr(value, "torch", value)
 
 
-def self_collision_cost(
-    env,
-    sensor_name: str,
-    force_threshold: float = 10.0,
-    sensor_cfg: SceneEntityCfg = SceneEntityCfg("self_collision"),
-) -> torch.Tensor:
-    """Count history frames with any robot self-contact above the force threshold.
-
-    Newton uses the shape-level force matrix (ground excluded). The PhysX
-    fallback uses non-foot body net forces, which excludes ordinary foot-ground
-    contact but can still see other body-ground contacts during a fall.
-    """
-    sensor = env.scene.sensors[sensor_name]
-    data = sensor.data
-
-    matrix = data.force_matrix_w_history
-    if matrix is not None:
-        force = _as_torch(matrix)  # (N, T, S, F, 3)
-        magnitude = torch.linalg.vector_norm(force, dim=-1)  # (N, T, S, F)
-        hit = (magnitude > force_threshold).any(dim=-1).any(dim=-1)  # (N, T)
-        return hit.float().sum(dim=-1)
-
-    history = data.net_forces_w_history
-    if history is None:
-        raise RuntimeError("self_collision requires force_matrix_w_history or net_forces_w_history")
-    force = _as_torch(history)  # (N, T, S, 3)
-    ids = sensor_cfg.body_ids
-    magnitude = torch.linalg.vector_norm(force[:, :, ids], dim=-1)  # (N, T, K)
-    return (magnitude > force_threshold).any(dim=-1).sum(dim=-1).float()
+# def self_collision_cost(
+#     env,
+#     sensor_name: str,
+#     force_threshold: float = 10.0,
+#     sensor_cfg: SceneEntityCfg = SceneEntityCfg("self_collision"),
+# ) -> torch.Tensor:
+#     """Count history frames with any robot self-contact above the force threshold.
+#
+#     Newton uses the shape-level force matrix (ground excluded). The PhysX
+#     fallback uses non-foot body net forces, which excludes ordinary foot-ground
+#     contact but can still see other body-ground contacts during a fall.
+#     """
+#     sensor = env.scene.sensors[sensor_name]
+#     data = sensor.data
+#
+#     matrix = data.force_matrix_w_history
+#     if matrix is not None:
+#         force = _as_torch(matrix)  # (N, T, S, F, 3)
+#         magnitude = torch.linalg.vector_norm(force, dim=-1)  # (N, T, S, F)
+#         hit = (magnitude > force_threshold).any(dim=-1).any(dim=-1)  # (N, T)
+#         return hit.float().sum(dim=-1)
+#
+#     history = data.net_forces_w_history
+#     if history is None:
+#         raise RuntimeError("self_collision requires force_matrix_w_history or net_forces_w_history")
+#     force = _as_torch(history)  # (N, T, S, 3)
+#     ids = sensor_cfg.body_ids
+#     magnitude = torch.linalg.vector_norm(force[:, :, ids], dim=-1)  # (N, T, K)
+#     return (magnitude > force_threshold).any(dim=-1).sum(dim=-1).float()

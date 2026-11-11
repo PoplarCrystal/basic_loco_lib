@@ -45,6 +45,7 @@ class AMPLoader:
                     if filename.endswith('.npz'):
                         motion_names.append(os.path.splitext(filename)[0])
                         motion_files.append(os.path.join(root, filename))
+
             motion_files, motion_names = zip(*sorted(zip(motion_files, motion_names))) if motion_files else ([], [])
             motion_files, motion_names = list(motion_files), list(motion_names)
             assert len(motion_files) > 0, f"No npz files found in directory: {motion_file}"
@@ -149,6 +150,7 @@ class AMPLoader:
                 )
             ]
         )
+        self._expert_cursor = 0
 
     @property
     def observation_dim(self) -> int:
@@ -156,12 +158,13 @@ class AMPLoader:
         return obs_dim
 
     def feed_forward_generator(self, num_mini_batch, mini_batch_size):
+        """One clip per minibatch with a persistent round-robin cursor."""
         device = self._observations.device
+        num_motions = len(self._motion_lengths)
         for _ in range(num_mini_batch):
-            motion_ids = torch.randint(len(self.motion_names), (mini_batch_size,), device=device)
-            # Each clip has equal probability; its final frame cannot start a pair.
-            frame_ids = (
-                torch.rand(mini_batch_size, device=device) * (self._motion_lengths[motion_ids] - 1)
-            ).long()
-            idxs = self._motion_offsets[motion_ids] + frame_ids
-            yield self._observations[idxs], self._observations[idxs + 1]
+            motion_idx = self._expert_cursor % num_motions
+            self._expert_cursor += 1
+            length = int(self._motion_lengths[motion_idx].item())
+            offset = int(self._motion_offsets[motion_idx].item())
+            frame_ids = torch.randint(0, length - 1, (mini_batch_size,), device=device)
+            yield self._observations[offset + frame_ids], self._observations[offset + frame_ids + 1]

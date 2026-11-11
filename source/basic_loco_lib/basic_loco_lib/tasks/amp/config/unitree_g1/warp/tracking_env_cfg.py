@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from isaaclab_experimental.envs import mdp as warp_mdp
+from isaaclab_experimental.envs.mdp import events as xmdp_events
 from isaaclab_experimental.managers import EventTermCfg as EventTerm
 from isaaclab_experimental.managers import ObservationTermCfg as ObsTerm
 from isaaclab_experimental.managers import RewardTermCfg as RewTerm
@@ -18,8 +19,10 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.envs.mdp import UniformVelocityCommandCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
@@ -31,6 +34,7 @@ from basic_loco_lib.robots.unitree_amp import (
     UNITREE_G1_29DOF_AMP_ACTION_SCALE,
 )
 from basic_loco_lib.robots.unitree_amp import UNITREE_G1_29DOF_AMP_CFG as ROBOT_CFG
+from basic_loco_lib.tasks.amp.mdp import curriculums as amp_curriculums
 from basic_loco_lib.tasks.amp.mdp_warp import events as amp_events
 from basic_loco_lib.tasks.amp.mdp_warp import observations as amp_obs
 from basic_loco_lib.tasks.amp.mdp_warp import obs_history as amp_history
@@ -49,14 +53,17 @@ class PhysicsCfg(PresetCfg):
         solver_cfg=MJWarpSolverCfg(
             # Suppress line-search limit warnings; keep other warnings enabled.
             class_type="basic_loco_lib.utils.physics.mjwarp_manager:NewtonMJWarpQuietLSManager",
-            # Extra contact capacity for capsule feet and self-collisions.
-            njmax=256,
-            nconmax=64,
+            # Extra contact capacity for capsule feet and self-collisions
+            # (AMP_mjlab's flat task uses njmax=640, auto nconmax).
+            njmax=640,
+            nconmax=None,
+            iterations=100,
             cone="pyramidal",
             impratio=1,
             integrator="implicitfast",
+            ccd_iterations=50,
             ls_parallel=True,
-            ls_iterations=15,
+            ls_iterations=20,
         ),
         num_substeps=1,
         debug_mode=False,
@@ -97,6 +104,22 @@ class RobotSceneCfg(InteractiveSceneCfg):
         prim_path="/World/skyLight",
         spawn=sim_utils.DomeLightCfg(color=(0.13, 0.13, 0.13), intensity=1000.0),
     )
+    # Per-body contacts used by the feet_slip reward. AMP_mjlab reads foot-site
+    # velocities; our URDF has no foot sites, so the reward uses ankle-link
+    # velocities as the closest available approximation.
+    feet_ground_contact: ContactSensorCfg = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/.*",
+        history_length=1,
+        track_air_time=False,
+    )
+    # Robot-robot contacts only (shape-level filters exclude the ground).
+    # self_collision: ContactSensorCfg = ContactSensorCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/.*",
+    #     sensor_shape_prim_expr=["{ENV_REGEX_NS}/Robot/.*"],
+    #     filter_shape_prim_expr=["{ENV_REGEX_NS}/Robot/.*"],
+    #     history_length=4,
+    #     force_threshold=10.0,
+    # )
 
 
 ##
@@ -131,7 +154,7 @@ class CommandsCfg:
 
 @configclass
 class ActionsCfg:
-    joint_pos = warp_mdp.JointPositionActionCfg(
+    JointPositionAction = warp_mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
         scale=UNITREE_G1_29DOF_AMP_ACTION_SCALE,
@@ -295,8 +318,6 @@ class EventCfg:
             "recovery_dir": _RECOVERY_DIR,
             "delay_reset_env_ratio": 0.4,
             "max_delay_steps": 250,
-            # Abort a delayed recovery early if physics enters a runaway state.
-            "max_delay_joint_velocity": 50.0,
         },
     )
     reset_from_motion = EventTerm(
@@ -307,6 +328,30 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
         },
     )
+    # Encoder-calibration-like joint zero offsets (mimic-style mechanism,
+    # AMP_mjlab's +/-0.015 rad range).
+    add_joint_default_pos = EventTerm(
+        func=amp_events.randomize_joint_default_pos,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+            "pos_distribution_params": (-0.015, 0.015),
+            "operation": "add",
+        },
+    )
+    physics_material = EventTerm(
+        func=warp_mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=("left_ankle_roll_link", "right_ankle_roll_link")
+            ),
+            "static_friction_range": (0.3, 1.2),
+            "dynamic_friction_range": (0.3, 1.2),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 1,
+        },
+    )
     push_robot = EventTerm(
         func=warp_mdp.push_by_setting_velocity,
         mode="interval",
@@ -315,10 +360,23 @@ class EventCfg:
             "velocity_range": {
                 "x": (-1.0, 1.0),
                 "y": (-0.5, 0.5),
-                "z": (-0.2, 0.2),
+                "z": (-0.4, 0.4),
                 "roll": (-0.52, 0.52),
                 "pitch": (-0.52, 0.52),
                 "yaw": (-0.78, 0.78),
+            },
+        },
+    )
+    # AMP_mjlab's base COM randomization: torso_link, additive, startup only.
+    base_com = EventTerm(
+        func=xmdp_events.randomize_rigid_body_com,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+            "com_range": {
+                "x": (-0.025, 0.025),
+                "y": (-0.025, 0.025),
+                "z": (-0.03, 0.03),
             },
         },
     )
@@ -372,6 +430,38 @@ class RewardsCfg:
     joint_limit = RewTerm(func=warp_mdp.joint_pos_limits, weight=-10.0)
     action_rate = RewTerm(func=warp_mdp.action_rate_l2, weight=-0.01)
     is_terminated = RewTerm(func=warp_mdp.is_terminated, weight=-200.0)
+    feet_slip = RewTerm(
+        func=amp_rewards.feet_slip,
+        weight=-0.25,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "feet_ground_contact",
+                body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+            ),
+            "command_name": "twist",
+            "command_threshold": 0.1,
+            # AMP_mjlab's left_foot/right_foot site, in the ankle_roll frame.
+            "foot_offset": (0.04, 0.0, -0.035),
+        },
+    )
+    # self_collisions = RewTerm(
+    #     func=amp_rewards.self_collision_cost,
+    #     weight=-0.1,
+    #     params={
+    #         "sensor_name": "self_collision",
+    #         "force_threshold": 10.0,
+    #         # Used only by the net-force fallback; the Newton force matrix
+    #         # already excludes the ground.
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "self_collision",
+    #             body_names=[r"^(?!left_ankle_roll_link$)(?!right_ankle_roll_link$).+$"],
+    #         ),
+    #     },
+    # )
 
 
 ##
@@ -392,6 +482,31 @@ class TerminationsCfg:
     )
 
 
+@configclass
+class CurriculumCfg:
+    """Slow-first command-range curriculum matching AMP_mjlab."""
+
+    commands_vel = CurrTerm(
+        func=amp_curriculums.commands_vel,
+        params={
+            "command_name": "twist",
+            "velocity_stages": [
+                {
+                    "step": 0,
+                    "lin_vel_x": (-0.5, 1.0),
+                    "lin_vel_y": (-0.5, 0.5),
+                    "ang_vel_z": (-1.0, 1.0),
+                },
+                {
+                    "step": 5000 * 24,
+                    "lin_vel_x": (-1.0, 2.0),
+                    "lin_vel_y": (-1.0, 1.0),
+                },
+            ],
+        },
+    )
+
+
 ##
 # Environment configuration
 ##
@@ -409,14 +524,18 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum = None
+    curriculum: CurriculumCfg = CurriculumCfg()
 
     def __post_init__(self):
         self.decimation = 4
         self.episode_length_s = 20.0
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
+        self.scene.feet_ground_contact.update_period = self.sim.dt * self.decimation
+        # self.scene.self_collision.update_period = self.sim.dt * self.decimation
 
     def play_mode(self):
         super().play_mode()
         self.events.push_robot = None
+        # Play uses the full command ranges from CommandsCfg.
+        self.curriculum = None

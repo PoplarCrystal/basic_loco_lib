@@ -15,29 +15,12 @@ from .utils import _wp
 def _apply_delayed_termination(
     delay_env_mask: wp.array(dtype=wp.bool),
     delay_counters: wp.array(dtype=wp.int64),
-    joint_vel: wp.array2d(dtype=wp.float32),
     truncated: wp.array(dtype=wp.bool),
     terminated: wp.array(dtype=wp.bool),
     dones: wp.array(dtype=wp.bool),
     max_delay_steps: int,
-    max_joint_velocity: float,
 ):
     env_id = wp.tid()
-    if delay_env_mask[env_id]:
-        unstable = wp.bool(False)
-        for joint_id in range(joint_vel.shape[1]):
-            velocity = joint_vel[env_id, joint_id]
-            if not wp.isfinite(velocity) or wp.abs(velocity) > max_joint_velocity:
-                unstable = True
-        # Release termination immediately if a delayed fall has become
-        # numerically unstable. This lets the normal reset path restore the
-        # robot before the bad state contaminates observations.
-        if unstable:
-            terminated[env_id] = True
-            dones[env_id] = True
-            delay_counters[env_id] = wp.int64(0)
-            return
-
     if delay_env_mask[env_id] and dones[env_id]:
         delay_counters[env_id] = delay_counters[env_id] + wp.int64(1)
         if delay_counters[env_id] < max_delay_steps:
@@ -62,16 +45,12 @@ class DelayedTerminationManagerWarp(TerminationManager):
         base: TerminationManager,
         delay_env_mask: torch.Tensor,
         max_delay_steps: int,
-        joint_vel: torch.Tensor,
-        max_joint_velocity: float = 50.0,
     ) -> None:
         # Steal all internal state from the base manager (avoid re-init).
         self.__dict__.update(base.__dict__)
         self._delay_env_mask = delay_env_mask
         self._delay_counters = torch.zeros_like(delay_env_mask, dtype=torch.long)
         self._max_delay_steps = max_delay_steps
-        self._joint_vel_wp = wp.from_torch(joint_vel)
-        self._max_joint_velocity = max_joint_velocity
         self._delay_env_mask_wp = wp.from_torch(self._delay_env_mask)
         self._delay_counters_wp = wp.from_torch(self._delay_counters)
 
@@ -88,12 +67,10 @@ class DelayedTerminationManagerWarp(TerminationManager):
             inputs=[
                 self._delay_env_mask_wp,
                 self._delay_counters_wp,
-                self._joint_vel_wp,
                 self._truncated_wp,
                 self._terminated_wp,
                 self._dones_wp,
                 self._max_delay_steps,
-                self._max_joint_velocity,
             ],
             device=self.device,
         )

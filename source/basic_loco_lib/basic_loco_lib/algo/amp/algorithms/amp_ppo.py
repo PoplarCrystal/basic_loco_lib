@@ -243,7 +243,7 @@ class AMPPPO(PPO):
                 nn.MSELoss()(expert_d, torch.ones(expert_d.size(), device=self.device))
                 + nn.MSELoss()(policy_d, -1 * torch.ones(policy_d.size(), device=self.device))
             )
-            grad_pen_loss = self.discriminator.compute_grad_pen(expert_state, expert_next_state, lambda_=10)
+            grad_pen_loss = self.discriminator.compute_grad_pen(*sample_amp_expert, lambda_=10)
             loss += amp_loss + grad_pen_loss
 
             # Backward
