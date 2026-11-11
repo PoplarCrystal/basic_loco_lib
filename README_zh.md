@@ -139,6 +139,26 @@ python scripts/rsl_rl/train.py --task Unitree-G1-AMP --viz none presets=newton \
 
 **注意：** 默认使用的 `data/amp/WalkandRun/` 与 `data/amp/Recovery/` 数据为 Newton 版本；如需使用 PhysX 后端，请重新生成对应的 PhysX 动作数据。
 
+### AMP-WM：世界模型 + 对抗式运动先验
+
+AMP-WM 与 Mimic-WM 一样在可微世界模型的想象 rollout 中训练策略，但奖励换成
+AMP 判别器的风格奖励与可微速度跟踪项的混合。判别器只用世界模型 replay buffer
+中的真实 transition 与 AMP 动作数据集训练，想象数据不参与判别器更新。第一版
+关闭外部 push 和延迟恢复 reset，同时提供 standard（PhysX / Newton presets）
+与 Warp 两种环境。
+
+```bash
+# standard 环境（默认 preset：Newton）
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-WM --viz none
+
+# Warp 环境
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-WM-Warp --viz none
+
+# 指定自定义动作数据集目录
+python scripts/rsl_rl/train.py --task Unitree-G1-AMP-WM-Warp --viz none \
+    --motion_file /path/to/motion_dir
+```
+
 ## 3. 回放与 ONNX 导出
 
 使用 `play.py` 加载训练后的 checkpoint。**任务、物理后端及 Mimic 参考动作应与训练时保持一致。** 以下为 Newton 后端示例：
@@ -168,6 +188,14 @@ python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --viz viser
 python scripts/rsl_rl/play.py --task Unitree-G1-AMP presets=newton \
     --checkpoint /path/to/ckpt.pt --export_only --num_envs 1
+
+# AMP-WM：回放 / 仅导出（使用世界模型 checkpoint）
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP-WM \
+    --checkpoint /path/to/last.pt --viz viser
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP-WM-Warp \
+    --checkpoint /path/to/last.pt --viz viser
+python scripts/rsl_rl/play.py --task Unitree-G1-AMP-WM-Warp \
+    --checkpoint /path/to/last.pt --export_only --num_envs 1 --viz none
 ```
 
 - `--viz viser` 打开轻量 3D 查看器；无头运行可显式使用 `--viz none`。

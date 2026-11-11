@@ -239,7 +239,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
-    if getattr(agent_cfg, "mimic_wm", False):
+    if getattr(agent_cfg, "amp_wm", False):
+        from basic_loco_lib.algo.amp_wm import AmpWmRunner
+
+        runner = AmpWmRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    elif getattr(agent_cfg, "mimic_wm", False):
         from basic_loco_lib.algo.mimic_wm import MimicWmRunner
 
         runner = MimicWmRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
