@@ -61,11 +61,11 @@ class AmpWmRunnerCfg(RslRlOnPolicyRunnerCfg):
     amp_discr_hidden_dims: tuple[int, ...] = (1024, 512, 256)
     amp_body_names: tuple[str, ...] = AMP_BODY_NAMES
     amp_anchor_name: str = ANCHOR_NAME
-    amp_batch: int = 1024
+    amp_batch: int = 4096
     amp_updates: int = 1
-    amp_lr: float = 1.0e-5
+    amp_lr: float = 1.0e-3
     amp_weight_decay_trunk: float = 1.0e-3
-    amp_weight_decay_out: float = 0.1
+    amp_weight_decay_out: float = 1.0e-2
     amp_grad_pen_lambda: float = 10.0
 
     ##

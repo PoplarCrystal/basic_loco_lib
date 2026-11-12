@@ -302,7 +302,7 @@ class AmpWmLearner:
                 },
             ],
             lr=cfg.amp_lr,
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.95),
             fused=self.device.type == "cuda",
         )
         self._amp_batch = int(cfg.amp_batch)
