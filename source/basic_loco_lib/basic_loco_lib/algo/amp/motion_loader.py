@@ -150,7 +150,6 @@ class AMPLoader:
                 )
             ]
         )
-        self._expert_cursor = 0
 
     @property
     def observation_dim(self) -> int:
@@ -158,13 +157,14 @@ class AMPLoader:
         return obs_dim
 
     def feed_forward_generator(self, num_mini_batch, mini_batch_size):
-        """One clip per minibatch with a persistent round-robin cursor."""
+        """Sample each transition from a randomly chosen clip."""
         device = self._observations.device
         num_motions = len(self._motion_lengths)
         for _ in range(num_mini_batch):
-            motion_idx = self._expert_cursor % num_motions
-            self._expert_cursor += 1
-            length = int(self._motion_lengths[motion_idx].item())
-            offset = int(self._motion_offsets[motion_idx].item())
-            frame_ids = torch.randint(0, length - 1, (mini_batch_size,), device=device)
-            yield self._observations[offset + frame_ids], self._observations[offset + frame_ids + 1]
+            motion_ids = torch.randint(num_motions, (mini_batch_size,), device=device)
+            frame_ids = (
+                torch.rand(mini_batch_size, device=device)
+                * (self._motion_lengths[motion_ids] - 1)
+            ).long()
+            idxs = self._motion_offsets[motion_ids] + frame_ids
+            yield self._observations[idxs], self._observations[idxs + 1]
