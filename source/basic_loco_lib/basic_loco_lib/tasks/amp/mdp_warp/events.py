@@ -29,6 +29,7 @@ def init_motion_loader_warp(
     recovery_dir: str | None = None,
     delay_reset_env_ratio: float = 0.0,
     max_delay_steps: int = 0,
+    max_delay_joint_velocity: float = 50.0,
 ):
     init_motion_loader(
         env,
@@ -37,6 +38,7 @@ def init_motion_loader_warp(
         recovery_dir,
         delay_reset_env_ratio,
         max_delay_steps,
+        max_delay_joint_velocity,
         termination_manager_cls=DelayedTerminationManagerWarp,
     )
 
