@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import quat_apply_inverse, quat_apply_yaw
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_apply_yaw
 
 
 def track_anchor_linear_velocity(
@@ -81,3 +81,72 @@ def _active_delay(env) -> torch.Tensor:
 
 def _mask_by_delay(env, reward: torch.Tensor, delay_rew_ratio: float) -> torch.Tensor:
     return torch.where(_active_delay(env), reward * delay_rew_ratio, reward)
+
+
+def feet_slip(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    foot_offset: tuple[float, float, float] = (0.04, 0.0, -0.035),
+) -> torch.Tensor:
+    """AMP_mjlab's ``feet_slip`` at a virtual sole point (URDF has no sites)."""
+    sensor = env.scene.sensors[sensor_cfg.name]
+    asset = env.scene[asset_cfg.name]
+    sensor_ids = sensor_cfg.body_ids
+    body_ids = asset_cfg.body_ids
+
+    forces = _as_torch(sensor.data.net_forces_w)
+    in_contact = (torch.linalg.vector_norm(forces[:, sensor_ids], dim=-1) > 1.0).float()
+
+    quat = asset.data.body_quat_w.torch[:, body_ids]
+    com = asset.data.body_com_pos_b.torch[:, body_ids]
+    offset = torch.tensor(foot_offset, dtype=quat.dtype, device=quat.device)
+    arm_world = quat_apply(quat, offset - com)
+    site_vel = (
+        asset.data.body_lin_vel_w.torch[:, body_ids]
+        + torch.cross(asset.data.body_ang_vel_w.torch[:, body_ids], arm_world, dim=-1)
+    )
+
+    command = env.command_manager.get_command(command_name)
+    active = (
+        torch.linalg.vector_norm(command[:, :2], dim=-1) + command[:, 2].abs() > command_threshold
+    ).float()
+    return (site_vel[..., :2].square().sum(dim=-1) * in_contact).sum(dim=-1) * active
+
+
+def _as_torch(value):
+    """Torch view of a data buffer (torch tensor or IsaacLab proxy)."""
+    return getattr(value, "torch", value)
+
+
+def self_collision_cost(
+    env,
+    sensor_name: str,
+    force_threshold: float = 10.0,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("self_collision"),
+) -> torch.Tensor:
+    """Count history frames with any robot self-contact above the force threshold.
+
+    Newton uses the shape-level force matrix (ground excluded). The PhysX
+    fallback uses non-foot body net forces, which excludes ordinary foot-ground
+    contact but can still see other body-ground contacts during a fall.
+    """
+    sensor = env.scene.sensors[sensor_name]
+    data = sensor.data
+
+    matrix = data.force_matrix_w_history
+    if matrix is not None:
+        force = _as_torch(matrix)  # (N, T, S, F, 3)
+        magnitude = torch.linalg.vector_norm(force, dim=-1)  # (N, T, S, F)
+        hit = (magnitude > force_threshold).any(dim=-1).any(dim=-1)  # (N, T)
+        return hit.float().sum(dim=-1)
+
+    history = data.net_forces_w_history
+    if history is None:
+        raise RuntimeError("self_collision requires force_matrix_w_history or net_forces_w_history")
+    force = _as_torch(history)  # (N, T, S, 3)
+    ids = sensor_cfg.body_ids
+    magnitude = torch.linalg.vector_norm(force[:, :, ids], dim=-1)  # (N, T, K)
+    return (magnitude > force_threshold).any(dim=-1).sum(dim=-1).float()

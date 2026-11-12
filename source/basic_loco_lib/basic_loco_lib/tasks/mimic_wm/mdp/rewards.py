@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-import warp as wp
 from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
@@ -12,6 +11,11 @@ from basic_loco_lib.tasks.mimic_wm.mdp.commands import MotionCommand
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def _as_torch(value):
+    """Torch view of a data buffer (torch tensor or IsaacLab proxy)."""
+    return getattr(value, "torch", value)
 
 
 def _get_body_indexes(command: MotionCommand, body_names: list[str] | None) -> list[int]:
@@ -77,7 +81,7 @@ def motion_global_body_angular_velocity_error_exp(
 
 def feet_contact_time(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    first_air = wp.to_torch(contact_sensor.compute_first_air(env.step_dt, env.physics_dt))[:, sensor_cfg.body_ids]
-    last_contact_time = wp.to_torch(contact_sensor.data.last_contact_time)[:, sensor_cfg.body_ids]
+    first_air = _as_torch(contact_sensor.compute_first_air(env.step_dt, env.physics_dt))[:, sensor_cfg.body_ids]
+    last_contact_time = _as_torch(contact_sensor.data.last_contact_time)[:, sensor_cfg.body_ids]
     reward = torch.sum((last_contact_time < threshold) * first_air, dim=-1)
     return reward
